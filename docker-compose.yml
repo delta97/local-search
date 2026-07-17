@@ -147,6 +147,9 @@ services:
       SEARXNG_URL: http://searxng:8080
       FIRECRAWL_URL: http://api:3002
       CAMOUFOX_URL: http://camoufox:3000
+      HISTORY_DB: /data/history.db
+    volumes:
+      - gateway-data:/data
     depends_on:
       - searxng
       - api
@@ -162,3 +165,4 @@ networks:
 
 volumes:
   nuq-postgres-data:
+  gateway-data:
