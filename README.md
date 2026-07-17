@@ -7,17 +7,18 @@ A fully self-hosted web search + page fetching pipeline for LLMs.
                         │                Docker Compose                │
   LLM / agent ──MCP──▶  │  gateway (FastAPI, :8088)                    │
   LLM / agent ──HTTP─▶  │    ├── /search ──▶ SearXNG (:8888)           │
-                        │    └── /fetch ───▶ Firecrawl API (:3002)     │
-                        │                      ├── camoufox ◀─default  │
-                        │                      ├── playwright-service  │
-                        │                      ├── redis / rabbitmq    │
-                        │                      └── nuq-postgres        │
+                        │    ├── /fetch ───▶ Firecrawl API (:3002)     │
+                        │    │                 ├── camoufox ◀─default  │
+                        │    │                 ├── playwright-service  │
+                        │    │                 ├── redis / rabbitmq    │
+                        │    │                 └── nuq-postgres        │
+                        │    └── screenshots ─▶ camoufox /screenshot   │
                         └──────────────────────────────────────────────┘
 ```
 
 - **SearXNG** — self-hosted metasearch engine (aggregates Google, Bing, DuckDuckGo, …), JSON API enabled.
 - **Firecrawl** (self-hosted, prebuilt GHCR images) — headless-browser scraping, returns clean markdown. Its native `SEARXNG_ENDPOINT` support is also wired up, so Firecrawl's own `/v2/search` works too.
-- **Camoufox** (`camoufox/`) — [anti-detect Firefox](https://camoufox.com/) running Xvfb-backed virtual headless with spoofed fingerprints (presents as Windows desktop Firefox). It implements the same `/scrape` contract as Firecrawl's playwright-service and is wired in as **Firecrawl's default browser rendering engine**.
+- **Camoufox** (`camoufox/`) — [anti-detect Firefox](https://camoufox.com/) running Xvfb-backed virtual headless with spoofed fingerprints (presents as Windows desktop Firefox). It implements the same `/scrape` contract as Firecrawl's playwright-service and is wired in as **Firecrawl's default browser rendering engine**. It also exposes a `/screenshot` endpoint (full-page PNG via Playwright's `page.screenshot`) that the gateway calls **directly** — self-hosted Firecrawl cannot produce screenshots (that capability lives in its cloud-only fire-engine), so the `screenshot` format bypasses Firecrawl entirely.
 - **Gateway** — a small FastAPI service exposing the two LLM-friendly endpoints.
 - **MCP server** — stdio MCP server (`mcp-server/`) exposing `web_search` and `fetch_page` tools.
 
@@ -85,7 +86,7 @@ Returns `{url, title, description, status_code, language, formats, markdown, ...
 | `html`       | `html`          | cleaned HTML (respects `only_main_content`) |
 | `rawHtml`    | `raw_html`      | unmodified page HTML |
 | `links`      | `links`         | array of outbound URLs |
-| `screenshot` | `screenshot`    | base64-encoded PNG — large, request only when needed |
+| `screenshot` | `screenshot`    | full-page base64 PNG, captured by camoufox directly (not Firecrawl) — large, request only when needed. When combined with other formats the page is fetched twice (Firecrawl for text, camoufox for the image); on capture failure the other formats still return, with a `screenshot_error` field |
 
 **Content-shaping options:**
 

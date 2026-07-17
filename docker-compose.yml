@@ -146,9 +146,11 @@ services:
     environment:
       SEARXNG_URL: http://searxng:8080
       FIRECRAWL_URL: http://api:3002
+      CAMOUFOX_URL: http://camoufox:3000
     depends_on:
       - searxng
       - api
+      - camoufox
     networks:
       - backend
     restart: unless-stopped

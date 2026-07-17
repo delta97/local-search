@@ -4,15 +4,22 @@ Implements the same /scrape contract as Firecrawl's playwright-service, so
 Firecrawl can use Camoufox (anti-detect Firefox) as its browser rendering
 engine. Request: {url, wait_after_load, timeout, headers, check_selector}.
 Response: {content, pageStatusCode, contentType?, pageError?}.
+
+Also exposes /screenshot (called directly by the gateway, not through
+Firecrawl, whose playwright-service contract cannot carry images):
+{url, wait_after_load, timeout, full_page} -> {screenshot: base64 PNG,
+pageStatusCode, title}.
 """
 
 import asyncio
+import base64
 import os
 from contextlib import asynccontextmanager
 
 from camoufox.async_api import AsyncCamoufox
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from pydantic import BaseModel, Field
 
 HEADLESS_MODE = os.environ.get("CAMOUFOX_HEADLESS", "virtual")  # 'virtual' uses Xvfb (stealthier)
@@ -36,6 +43,13 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="camoufox-service", lifespan=lifespan)
 
 
+class ScreenshotRequest(BaseModel):
+    url: str
+    wait_after_load: int = Field(1000, description="ms to let the page settle before capture")
+    timeout: int = Field(60000, description="navigation timeout in ms")
+    full_page: bool = Field(True, description="capture the entire page, not just the viewport")
+
+
 class ScrapeRequest(BaseModel):
     url: str
     wait_after_load: int = Field(0, description="ms to wait after load")
@@ -48,6 +62,49 @@ class ScrapeRequest(BaseModel):
 @app.get("/health")
 async def health():
     return {"status": "ok", "browser": browser is not None, "headless": HEADLESS_MODE}
+
+
+@app.post("/screenshot")
+async def screenshot(req: ScreenshotRequest):
+    async with semaphore:
+        page = None
+        try:
+            page = await browser.new_page()
+            # domcontentloaded, not load: the load event can hang past the
+            # timeout on tracker/ad requests, and a settle delay after DOM
+            # ready is enough for a visual capture.
+            response = None
+            try:
+                response = await page.goto(
+                    req.url, wait_until="domcontentloaded", timeout=req.timeout
+                )
+            except PlaywrightTimeoutError:
+                # about:blank means navigation never committed — a real failure.
+                # Otherwise the event just never fired (hung trackers, slow
+                # subresources); capture whatever has rendered.
+                if page.url == "about:blank":
+                    raise
+            if req.wait_after_load > 0:
+                await page.wait_for_timeout(req.wait_after_load)
+            img = await page.screenshot(full_page=req.full_page, type="png")
+            return JSONResponse(
+                {
+                    "screenshot": base64.b64encode(img).decode(),
+                    "pageStatusCode": response.status if response else 200,
+                    "title": await page.title(),
+                }
+            )
+        except Exception as e:
+            return JSONResponse(
+                status_code=500,
+                content={"error": f"Screenshot failed: {e}"},
+            )
+        finally:
+            if page:
+                try:
+                    await page.close()
+                except Exception:
+                    pass
 
 
 @app.post("/scrape")

@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 
 SEARXNG_URL = os.environ.get("SEARXNG_URL", "http://localhost:8888").rstrip("/")
 FIRECRAWL_URL = os.environ.get("FIRECRAWL_URL", "http://localhost:3002").rstrip("/")
+CAMOUFOX_URL = os.environ.get("CAMOUFOX_URL", "http://localhost:3000").rstrip("/")
 STATIC_DIR = Path(__file__).parent / "static"
 
 app = FastAPI(title="local-search gateway", version="1.0.0")
@@ -125,6 +126,33 @@ async def searx_search(req: SearchRequest) -> list[dict[str, Any]]:
     return results
 
 
+async def camoufox_screenshot(url: str, wait_for: int | None, timeout: int) -> dict[str, Any]:
+    payload: dict[str, Any] = {"url": url, "timeout": timeout, "full_page": True}
+    if wait_for:
+        payload["wait_after_load"] = wait_for
+    # Navigation time varies a lot on throttled/heavy sites; one retry
+    # absorbs most transient goto timeouts.
+    last_exc: Exception | None = None
+    for _ in range(2):
+        try:
+            r = await client.post(f"{CAMOUFOX_URL}/screenshot", json=payload)
+            r.raise_for_status()
+        except httpx.HTTPError as e:
+            last_exc = e
+            continue
+        body = r.json()
+        if body.get("screenshot"):
+            return body
+        last_exc = HTTPException(
+            status_code=502, detail=f"Camoufox returned no screenshot for {url}"
+        )
+    if isinstance(last_exc, HTTPException):
+        raise last_exc
+    raise HTTPException(
+        status_code=502, detail=f"Camoufox screenshot error for {url}: {last_exc}"
+    ) from last_exc
+
+
 async def firecrawl_scrape(req: FetchRequest) -> dict[str, Any]:
     # Normalize requested formats; default to markdown for backward compat.
     formats = list(req.formats) if req.formats else ["markdown"]
@@ -135,11 +163,53 @@ async def firecrawl_scrape(req: FetchRequest) -> dict[str, Any]:
             detail=f"Unsupported format(s): {bad}. Supported: {sorted(SUPPORTED_FORMATS)}",
         )
 
+    timeout = req.timeout or (60000 if req.stealth else 30000)
+    # Self-hosted Firecrawl cannot produce screenshots (that lives in its
+    # cloud-only fire-engine); camoufox captures them directly instead.
+    # Screenshots get a more generous navigation budget than text scrapes.
+    shot_timeout = req.timeout or 60000
+    want_screenshot = "screenshot" in formats
+    fc_formats = [f for f in formats if f != "screenshot"]
+
+    if want_screenshot and not fc_formats:
+        shot = await camoufox_screenshot(req.url, req.wait_for, shot_timeout)
+        return {
+            "url": req.url,
+            "title": shot.get("title"),
+            "description": None,
+            "status_code": shot.get("pageStatusCode"),
+            "language": None,
+            "source_url": req.url,
+            "formats": formats,
+            "screenshot": shot["screenshot"],
+        }
+
+    if want_screenshot:
+        page, shot = await asyncio.gather(
+            _firecrawl_request(req, fc_formats, timeout),
+            camoufox_screenshot(req.url, req.wait_for, shot_timeout),
+            return_exceptions=True,
+        )
+        if isinstance(page, BaseException):
+            raise page
+        page["formats"] = formats
+        if isinstance(shot, BaseException):
+            page["screenshot_error"] = (
+                shot.detail if isinstance(shot, HTTPException) else str(shot)
+            )
+        else:
+            page["screenshot"] = shot["screenshot"]
+        return page
+
+    return await _firecrawl_request(req, fc_formats, timeout)
+
+
+async def _firecrawl_request(req: FetchRequest, formats: list[str], timeout: int) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "url": req.url,
         "formats": formats,
         "onlyMainContent": req.only_main_content,
-        "timeout": req.timeout or (60000 if req.stealth else 30000),
+        "timeout": timeout,
     }
     if req.wait_for is not None:
         payload["waitFor"] = req.wait_for
@@ -190,9 +260,6 @@ async def firecrawl_scrape(req: FetchRequest) -> dict[str, Any]:
         out["raw_html"] = data.get("rawHtml")
     if "links" in formats:
         out["links"] = data.get("links")
-    if "screenshot" in formats:
-        # Firecrawl returns a base64-encoded PNG/JPEG string.
-        out["screenshot"] = data.get("screenshot")
     return out
 
 
@@ -209,6 +276,11 @@ async def healthz():
         status["firecrawl"] = "ok" if r.status_code < 500 else f"http {r.status_code}"
     except Exception as e:
         status["firecrawl"] = f"unreachable: {e}"
+    try:
+        r = await client.get(f"{CAMOUFOX_URL}/health", timeout=10)
+        status["camoufox"] = "ok" if r.status_code == 200 else f"http {r.status_code}"
+    except Exception as e:
+        status["camoufox"] = f"unreachable: {e}"
     return status
 
 
