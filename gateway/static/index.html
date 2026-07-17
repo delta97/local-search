@@ -83,6 +83,17 @@
   .opt input { accent-color: var(--amber); width: 16px; height: 16px; }
   .mini { width: 92px !important; }
 
+  .pills { display: flex; gap: 4px; flex-wrap: wrap; }
+  .pill {
+    font-family: inherit; font-size: 11.5px; letter-spacing: .05em; text-transform: uppercase;
+    background: transparent; color: var(--muted); border: 1px solid var(--line);
+    border-radius: 6px; padding: 5px 11px; cursor: pointer;
+    transition: color .15s, border-color .15s, background .15s;
+  }
+  .pill:hover { color: var(--ink); border-color: var(--amber-dim); }
+  .pill.active { color: var(--amber); border-color: var(--amber-dim); background: rgba(245,184,67,.08); }
+  .optlabel { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; letter-spacing: .09em; text-transform: uppercase; color: var(--muted); }
+
   button.go {
     font-family: inherit; font-weight: 700; font-size: 14px; letter-spacing: .06em; text-transform: uppercase;
     color: #10160f; background: var(--amber); border: none; border-radius: 8px; padding: 0 26px; cursor: pointer;
@@ -96,7 +107,7 @@
   .status .spin { color: var(--amber); }
   .status .err { color: var(--red); }
 
-  .results { margin-top: 8px; display: grid; gap: 14px; }
+  .results { margin-top: 8px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
   .card {
     background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px;
     animation: rise .35s ease both;
@@ -175,17 +186,37 @@
       <div class="opts">
         <div class="opt"><label for="max" style="text-transform:none;letter-spacing:0">results</label>
           <input class="mini" type="number" id="max" value="8" min="1" max="30" /></div>
-        <div class="opt"><label for="time" style="text-transform:none;letter-spacing:0">time</label>
-          <select id="time" style="width:120px">
-            <option value="">any</option><option value="day">day</option>
-            <option value="week">week</option><option value="month">month</option><option value="year">year</option>
-          </select></div>
-        <label class="opt"><input type="checkbox" id="fetchContent" /> scrape top results into markdown</label>
+        <div class="opt">
+          <span class="optlabel"><i data-lucide="calendar" class="icon"></i> published within</span>
+          <div class="pills">
+            <button type="button" class="pill time-pill active" data-val="">any</button>
+            <button type="button" class="pill time-pill" data-val="day">day</button>
+            <button type="button" class="pill time-pill" data-val="week">week</button>
+            <button type="button" class="pill time-pill" data-val="month">month</button>
+            <button type="button" class="pill time-pill" data-val="year">year</button>
+          </div>
+        </div>
+      </div>
+      <div class="opts">
+        <label class="opt"><input type="checkbox" id="fetchContent" /> scrape top results</label>
         <div class="opt"><label for="fetchTop" style="text-transform:none;letter-spacing:0">top</label>
           <input class="mini" type="number" id="fetchTop" value="3" min="1" max="10" /></div>
+        <div class="opt" id="scrapeFormats" style="display:none">
+          <span class="optlabel"><i data-lucide="file-type-2" class="icon"></i> scrape as</span>
+          <label class="opt"><input type="checkbox" class="sfmt" value="markdown" checked /> markdown</label>
+          <label class="opt"><input type="checkbox" class="sfmt" value="html" /> html</label>
+          <label class="opt"><input type="checkbox" class="sfmt" value="screenshot" /> screenshot (full page)</label>
+        </div>
       </div>
     </form>
     <div class="status" id="searchStatus"></div>
+    <div class="opts" id="viewToggle" style="display:none;margin-top:10px">
+      <span class="optlabel"><i data-lucide="layout-list" class="icon"></i> view</span>
+      <div class="pills">
+        <button type="button" class="pill view-pill active" data-view="cards">cards</button>
+        <button type="button" class="pill view-pill" data-view="json">json</button>
+      </div>
+    </div>
     <div class="results" id="searchResults"></div>
   </section>
 
@@ -215,7 +246,8 @@
         <label class="opt"><input type="checkbox" class="fmt" value="html" /> html</label>
         <label class="opt"><input type="checkbox" class="fmt" value="rawHtml" /> raw html</label>
         <label class="opt"><input type="checkbox" class="fmt" value="links" /> links</label>
-        <label class="opt"><input type="checkbox" class="fmt" value="screenshot" /> screenshot</label>
+        <label class="opt"><input type="checkbox" class="fmt" value="screenshot" /> screenshot (full page)</label>
+        <label class="opt"><input type="checkbox" class="fmt" value="json" /> json</label>
       </div>
       <div class="opts">
         <div class="opt" style="flex:1">
@@ -277,33 +309,78 @@ function mdToHtml(md) {
   return h;
 }
 
+// time-range pills
+document.querySelectorAll(".time-pill").forEach(p => p.onclick = () => {
+  document.querySelectorAll(".time-pill").forEach(x => x.classList.remove("active"));
+  p.classList.add("active");
+});
+function getTimeRange() {
+  return document.querySelector(".time-pill.active")?.dataset.val || null;
+}
+
+// show scrape-format choices only when scraping is on
+$("#fetchContent").addEventListener("change", () => {
+  $("#scrapeFormats").style.display = $("#fetchContent").checked ? "flex" : "none";
+});
+
+// search result rendering (cards + json views)
+let lastSearchData = null;
+
+function renderSearchCards(d) {
+  $("#searchResults").innerHTML = d.results.map((x,i) => {
+    const parts = [];
+    if (x.content) parts.push(`<details><summary>scraped markdown</summary><div class="content">${esc(x.content)}</div></details>`);
+    if (x.html) parts.push(`<details><summary>scraped html</summary><div class="content">${esc(x.html)}</div></details>`);
+    if (x.screenshot) parts.push(`<details><summary>screenshot</summary><img src="data:image/png;base64,${x.screenshot}" alt="screenshot" style="max-width:100%;border-radius:6px;margin-top:8px" /></details>`);
+    if (x.content_error) parts.push(`<div class="meta"><span class="err">scrape failed: ${esc(String(x.content_error))}</span></div>`);
+    const scraped = (x.content || x.html || x.screenshot) ? '<span class="badge">scraped</span>' : "";
+    return `<div class="card" style="animation-delay:${i*40}ms">
+      <div class="rank">${String(i+1).padStart(2,"0")}</div>
+      <a class="title" href="${esc(x.url)}" target="_blank" rel="noopener">${esc(x.title)||"(untitled)"}</a> ${scraped}
+      <div class="url">${esc(x.url)}</div>
+      <div class="snippet">${esc(x.snippet)||""}</div>
+      <div class="meta">${x.engine?`engine: ${esc(x.engine)}`:""}${x.score?` · score: ${(+x.score).toFixed(1)}`:""}${x.published_date?` · ${esc(x.published_date)}`:""}</div>
+      ${parts.join("")}</div>`;
+  }).join("") || '<div class="status">no results.</div>';
+}
+
+function renderSearchJson(d) {
+  $("#searchResults").innerHTML =
+    `<div class="card"><pre style="margin:0;overflow:auto;max-height:62vh"><code>${esc(JSON.stringify(d, null, 2))}</code></pre></div>`;
+}
+
+document.querySelectorAll(".view-pill").forEach(p => p.onclick = () => {
+  document.querySelectorAll(".view-pill").forEach(x => x.classList.remove("active"));
+  p.classList.add("active");
+  if (!lastSearchData) return;
+  p.dataset.view === "json" ? renderSearchJson(lastSearchData) : renderSearchCards(lastSearchData);
+});
+
 // search
 $("#searchForm").onsubmit = async e => {
   e.preventDefault();
   const q = $("#q").value.trim(); if (!q) return;
   const btn = e.target.querySelector("button"); btn.disabled = true;
   $("#searchResults").innerHTML = "";
+  $("#viewToggle").style.display = "none";
   const enrich = $("#fetchContent").checked;
   $("#searchStatus").innerHTML = `<span class="spin">${SPIN_SVG} querying searxng${enrich ? " + scraping top results" : ""}…</span>`;
   try {
     const body = { query: q, max_results: +$("#max").value, fetch_content: enrich,
-                   fetch_top: +$("#fetchTop").value, time_range: $("#time").value || null };
+                   fetch_top: +$("#fetchTop").value, time_range: getTimeRange() };
+    if (enrich) {
+      const sfmts = [...document.querySelectorAll(".sfmt:checked")].map(c => c.value);
+      body.fetch_formats = sfmts.length ? sfmts : ["markdown"];
+    }
     const r = await fetch("/search", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) });
     if (!r.ok) throw new Error(await r.text());
     const d = await r.json();
-    $("#searchStatus").innerHTML = `${d.result_count} result${d.result_count===1?"":"s"} for “${esc(q)}”`;
-    $("#searchResults").innerHTML = d.results.map((x,i) => {
-      const content = x.content ? `<details><summary>show scraped content</summary><div class="content">${esc(x.content)}</div></details>`
-        : x.content_error ? `<div class="meta"><span class="err">scrape failed: ${esc(String(x.content_error))}</span></div>` : "";
-      const scraped = x.content ? '<span class="badge">scraped</span>' : "";
-      return `<div class="card" style="animation-delay:${i*40}ms">
-        <div class="rank">${String(i+1).padStart(2,"0")}</div>
-        <a class="title" href="${esc(x.url)}" target="_blank" rel="noopener">${esc(x.title)||"(untitled)"}</a> ${scraped}
-        <div class="url">${esc(x.url)}</div>
-        <div class="snippet">${esc(x.snippet)||""}</div>
-        <div class="meta">${x.engine?`engine: ${esc(x.engine)}`:""}${x.score?` · score: ${(+x.score).toFixed(1)}`:""}${x.published_date?` · ${esc(x.published_date)}`:""}</div>
-        ${content}</div>`;
-    }).join("") || '<div class="status">no results.</div>';
+    const tr = getTimeRange();
+    $("#searchStatus").innerHTML = `${d.result_count} result${d.result_count===1?"":"s"} for “${esc(q)}”${tr?` · past ${tr}`:""}`;
+    lastSearchData = d;
+    $("#viewToggle").style.display = "flex";
+    document.querySelectorAll(".view-pill").forEach(x => x.classList.toggle("active", x.dataset.view === "cards"));
+    renderSearchCards(d);
   } catch (err) {
     $("#searchStatus").innerHTML = `<span class="err">error: ${esc(String(err.message||err))}</span>`;
   } finally { btn.disabled = false; }
@@ -316,7 +393,10 @@ $("#fetchForm").onsubmit = async e => {
   const btn = e.target.querySelector("button"); btn.disabled = true;
   $("#fetchResult").innerHTML = "";
   const stealth = $("#stealth").checked;
-  const formats = [...document.querySelectorAll(".fmt:checked")].map(c => c.value);
+  const allFormats = [...document.querySelectorAll(".fmt:checked")].map(c => c.value);
+  const wantJson = allFormats.includes("json");
+  // "json" is rendered client-side from the response; the API only accepts Firecrawl formats
+  const formats = allFormats.filter(f => f !== "json");
   const waitFor = +$("#waitFor").value || 0;
   const location = $("#location").value.trim() || null;
   const includeTags = $("#includeTags").value.trim() ? $("#includeTags").value.split(",").map(s=>s.trim()).filter(Boolean) : null;
@@ -332,8 +412,8 @@ $("#fetchForm").onsubmit = async e => {
     if (!r.ok) throw new Error(await r.text());
     const d = await r.json();
     const mdLen = (d.markdown||"").length;
-    const fmtList = (d.formats||["markdown"]).join(", ");
-    $("#fetchStatus").innerHTML = `HTTP ${d.status_code ?? "?"} · formats: ${esc(fmtList)}${mdLen?` · ${mdLen.toLocaleString()} chars markdown`:''}${d.truncated?` (truncated @ ${d.truncated_at})`:''}`;
+    const fmtList = (d.formats||["markdown"]).concat(wantJson ? ["json"] : []).join(", ");
+    $("#fetchStatus").innerHTML = `HTTP ${d.status_code ?? "?"} · formats: ${esc(fmtList)}${mdLen?` · ${mdLen.toLocaleString()} chars markdown`:''}${d.truncated?` (truncated @ ${d.truncated_at})`:''}${d.screenshot_error?` · <span class="err">screenshot failed: ${esc(String(d.screenshot_error))}</span>`:''}`;
 
     const bits = [];
     if (stealth) bits.push('<span class="badge">stealth</span>');
@@ -346,6 +426,7 @@ $("#fetchForm").onsubmit = async e => {
       <div class="md">${d.markdown ? mdToHtml(d.markdown) : "<em>no markdown requested</em>"}</div>`;
 
     const extras = [];
+    if (wantJson) extras.push(`<details><summary>json</summary><pre><code>${esc(JSON.stringify(d, null, 2))}</code></pre></details>`);
     if (d.screenshot) extras.push(`<details><summary>screenshot</summary><img src="data:image/png;base64,${d.screenshot}" alt="screenshot" style="max-width:100%;border-radius:6px" /></details>`);
     if (d.links && d.links.length) extras.push(`<details><summary>links (${d.links.length})</summary><ul>${d.links.map(l=>`<li><a href="${esc(l)}" target="_blank" rel="noopener">${esc(l)}</a></li>`).join("")}</ul></details>`);
     if (d.html) extras.push(`<details><summary>html</summary><pre><code>${esc(d.html)}</code></pre></details>`);
