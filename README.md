@@ -14,16 +14,18 @@ A fully self-hosted web search + page fetching pipeline for LLMs.
                         │    ├── /map ─────▶ Firecrawl map             │
                         │    ├── /history ─▶ SQLite run history        │
                         │    │                 ├── camoufox ◀─default  │
+                        │    │                 ├── botasaurus (opt-in) │
                         │    │                 ├── playwright-service  │
                         │    │                 ├── redis / rabbitmq    │
                         │    │                 └── nuq-postgres        │
-                        │    └── screenshots ─▶ camoufox /screenshot   │
+                        │    └── screenshots ─▶ browser /screenshot    │
                         └──────────────────────────────────────────────┘
 ```
 
 - **SearXNG** — self-hosted metasearch engine (aggregates Google, Bing, DuckDuckGo, …), JSON API enabled.
 - **Firecrawl** (self-hosted, prebuilt GHCR images) — headless-browser scraping, returns clean markdown. Its native `SEARXNG_ENDPOINT` support is also wired up, so Firecrawl's own `/v2/search` works too.
 - **Camoufox** (`camoufox/`) — [anti-detect Firefox](https://camoufox.com/) running Xvfb-backed virtual headless with spoofed fingerprints (presents as Windows desktop Firefox). It implements the same `/scrape` contract as Firecrawl's playwright-service and is wired in as **Firecrawl's default browser rendering engine**. It also exposes a `/screenshot` endpoint (full-page PNG via Playwright's `page.screenshot`) that the gateway calls **directly** — self-hosted Firecrawl cannot produce screenshots (that capability lives in its cloud-only fire-engine), so the `screenshot` format bypasses Firecrawl entirely.
+- **Botasaurus** (`botasaurus/`, opt-in) — [anti-detect Chrome](https://github.com/omkarcloud/botasaurus) alternative engine implementing the exact same `/scrape`, `/screenshot`, and `/health` contract as camoufox, plus an extra `bypass_cloudflare` request flag (camoufox silently ignores it). See "Switching browser engines" below.
 - **Gateway** — a small FastAPI service exposing the LLM-friendly endpoints (search, fetch, crawl, map).
 - **OpenRouter** (optional) — when an API key is configured, `/search` can synthesize a cited answer over the top results via any OpenAI-compatible chat endpoint (OpenRouter by default).
 - **MCP server** — stdio MCP server (`mcp-server/`) exposing `web_search`, `fetch_page`, `crawl_site`, and `map_site` tools.
@@ -268,6 +270,23 @@ ANSWER_BASE_URL=https://openrouter.ai/api/v1   # override for Ollama/vLLM/etc.
 - Firecrawl resource limits (`cpus`, `mem_limit` on `api` / `playwright-service` / `camoufox`) can be raised in `docker-compose.yml` for heavier crawling.
 - Camoufox is Firecrawl's browser engine by default (`PLAYWRIGHT_MICROSERVICE_URL` points at it). To switch back to stock Playwright/Chromium: `PLAYWRIGHT_MICROSERVICE_URL=http://playwright-service:3000/scrape docker compose up -d api` (or put it in a `.env` file).
 - Note: even without `stealth: true`, Firecrawl only escalates to the browser engine when its plain HTTP fetch isn't sufficient; `stealth: true` forces browser rendering every time.
+
+### Switching browser engines (camoufox ↔ botasaurus)
+
+The **botasaurus** service (anti-detect Chrome) is a drop-in alternative to camoufox, exposing the identical `/scrape` + `/screenshot` + `/health` contract. It is profile-gated so it doesn't consume ~3 GB of Chrome unless you opt in. To make it the active engine, add to a `.env` file next to `docker-compose.yml`:
+
+```
+COMPOSE_PROFILES=botasaurus
+PLAYWRIGHT_MICROSERVICE_URL=http://botasaurus:3000/scrape   # Firecrawl scrape engine
+BROWSER_URL=http://botasaurus:3000                          # gateway screenshots + healthz
+```
+
+then `docker compose up -d --build`. Remove the `.env` (or the three lines) to revert to camoufox. `BROWSER_URL` falls back to the legacy `CAMOUFOX_URL` if unset.
+
+- **Cloudflare bypass:** botasaurus `/scrape` and `/screenshot` accept an extra `bypass_cloudflare: true` request field (routes via `google_get` + its CDP challenge solver); camoufox ignores the field harmlessly. Firecrawl never sends it — it's reachable only by POSTing the browser service's `/scrape` directly.
+- **Engine choice is deployment-wide, not per-request.** Firecrawl reads `PLAYWRIGHT_MICROSERVICE_URL` once at startup, so the text-fetch path uses whichever engine is configured; per-request selection would need a routing proxy in front of both.
+- Botasaurus defaults to `MAX_CONCURRENT_PAGES=3` (each pooled driver is a full Chrome process); raise it in `docker-compose.yml` only with a matching `mem_limit` bump.
+
 - `/crawl` is capped at 100 pages per request (`limit`) and bounded by `timeout_s` (default 300s); it's a synchronous facade over Firecrawl's async crawl job — for very large crawls, split by `include_paths` or call Firecrawl's `/v2/crawl` directly.
 
 ## Hardening bot-detection evasion
@@ -282,6 +301,10 @@ Known gaps in the current anti-detect stack (review the `camoufox/server.py` and
 - Header forwarding only drops `user-agent`; `sec-ch-ua`, `accept-language`, `sec-fetch-*`, `cookie` from the caller can still clash with the spoofed fingerprint — let Camoufox own all client-hint headers.
 - No block detection / fresh-context retry on 403/429/503 or challenge-page text (`"Just a moment"`, `cf-challenge`).
 - No warm-up navigation and no per-context OS/locale rotation, so every request presents the same Windows/Firefox fingerprint — a correlation anchor.
+
+**Botasaurus engine (`botasaurus/server.py`, opt-in)**
+- Its `bypass_cloudflare` flag (via `google_get`) partially addresses the Cloudflare-challenge gap that camoufox has no answer for, but it routes through Google's cache and is only reachable by direct `/scrape` calls (Firecrawl won't send it).
+- Like camoufox, pooled drivers are reused across requests, so cookies/storage/fingerprint persist within a driver until it's recycled; proxy support (`Driver(proxy=...)`), `humanize`, and geoip locale matching are available in the driver but not wired into the service yet.
 
 **Gateway (`gateway/app.py`)**
 - `stealth` forces the browser engine via the `waitFor: 500` hint, which Firecrawl treats as advisory, not guaranteed. For hard guarantees, POST directly to the camoufox `/scrape` endpoint or pass a real Firecrawl engine flag.
