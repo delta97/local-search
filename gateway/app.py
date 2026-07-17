@@ -226,15 +226,16 @@ async def _run_search(req: SearchRequest) -> dict[str, Any]:
                 )
                 page = await firecrawl_scrape(sub)
                 # Surface requested formats on the result card.
-                for fmt, key in (
-                    ("markdown", "content"),
-                    ("html", "html"),
-                    ("rawHtml", "raw_html"),
-                    ("links", "links"),
-                    ("screenshot", "screenshot"),
+                # (fmt = requested format name, src = key in the scrape output, dest = key on the result)
+                for fmt, src, dest in (
+                    ("markdown", "markdown", "content"),
+                    ("html", "html", "html"),
+                    ("rawHtml", "raw_html", "raw_html"),
+                    ("links", "links", "links"),
+                    ("screenshot", "screenshot", "screenshot"),
                 ):
-                    if fmt in req.fetch_formats and key in page:
-                        item[key] = page[key]
+                    if fmt in req.fetch_formats and page.get(src) is not None:
+                        item[dest] = page[src]
             except HTTPException as e:
                 item["content_error"] = e.detail
 
