@@ -13,7 +13,9 @@ pageStatusCode, title}.
 
 import asyncio
 import base64
+import logging
 import os
+import time
 from contextlib import asynccontextmanager
 
 from camoufox.async_api import AsyncCamoufox
@@ -21,6 +23,11 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from pydantic import BaseModel, Field
+
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s"
+)
+logger = logging.getLogger("camoufox")
 
 HEADLESS_MODE = os.environ.get("CAMOUFOX_HEADLESS", "virtual")  # 'virtual' uses Xvfb (stealthier)
 MAX_CONCURRENT_PAGES = int(os.environ.get("MAX_CONCURRENT_PAGES", "5"))
@@ -68,6 +75,11 @@ async def health():
 async def screenshot(req: ScreenshotRequest):
     async with semaphore:
         page = None
+        t0 = time.monotonic()
+        logger.info(
+            "screenshot start url=%s full_page=%s timeout=%dms",
+            req.url, req.full_page, req.timeout,
+        )
         try:
             page = await browser.new_page()
             # domcontentloaded, not load: the load event can hang past the
@@ -84,20 +96,56 @@ async def screenshot(req: ScreenshotRequest):
                 # subresources); capture whatever has rendered.
                 if page.url == "about:blank":
                     raise
+                logger.warning(
+                    "screenshot goto timed out after %dms but DOM committed url=%s; capturing anyway",
+                    req.timeout, req.url,
+                )
             if req.wait_after_load > 0:
                 await page.wait_for_timeout(req.wait_after_load)
-            img = await page.screenshot(full_page=req.full_page, type="png")
-            return JSONResponse(
-                {
-                    "screenshot": base64.b64encode(img).decode(),
-                    "pageStatusCode": response.status if response else 200,
-                    "title": await page.title(),
-                }
+            degraded = False
+            try:
+                # Explicit timeout: page.screenshot defaults to 30s internally,
+                # which full-page captures of very tall pages can exceed even
+                # when the caller allowed a longer overall budget.
+                img = await page.screenshot(
+                    full_page=req.full_page, type="png", timeout=req.timeout
+                )
+            except Exception as cap_err:
+                if not req.full_page:
+                    raise
+                # Full-page capture fails on very tall/heavy pages (Firefox
+                # surface-size limits, capture timeout under memory pressure).
+                # A viewport shot is better than a 500.
+                logger.warning(
+                    "full-page capture failed url=%s (%s: %s); retrying viewport-only",
+                    req.url, type(cap_err).__name__, cap_err,
+                )
+                # Viewport capture is cheap — if the page is so wedged that even
+                # this times out, fail fast instead of burning another full budget.
+                img = await page.screenshot(
+                    full_page=False, type="png", timeout=min(req.timeout, 15000)
+                )
+                degraded = True
+            body = {
+                "screenshot": base64.b64encode(img).decode(),
+                "pageStatusCode": response.status if response else 200,
+                "title": await page.title(),
+            }
+            if degraded:
+                body["degraded"] = "full-page capture failed; captured viewport only"
+            logger.info(
+                "screenshot ok url=%s bytes=%d elapsed=%.1fs%s",
+                req.url, len(img), time.monotonic() - t0,
+                " (viewport fallback)" if degraded else "",
             )
+            return JSONResponse(body)
         except Exception as e:
+            logger.exception(
+                "screenshot failed url=%s elapsed=%.1fs", req.url, time.monotonic() - t0
+            )
             return JSONResponse(
                 status_code=500,
-                content={"error": f"Screenshot failed: {e}"},
+                content={"error": f"Screenshot failed: {type(e).__name__}: {e}"},
             )
         finally:
             if page:
@@ -111,6 +159,8 @@ async def screenshot(req: ScreenshotRequest):
 async def scrape(req: ScrapeRequest):
     async with semaphore:
         page = None
+        t0 = time.monotonic()
+        logger.info("scrape start url=%s timeout=%dms", req.url, req.timeout)
         try:
             page = await browser.new_page()
 
@@ -142,11 +192,18 @@ async def scrape(req: ScrapeRequest):
             }
             if status != 200:
                 body["pageError"] = f"HTTP {status}"
+            logger.info(
+                "scrape ok url=%s status=%d bytes=%d elapsed=%.1fs",
+                req.url, status, len(content), time.monotonic() - t0,
+            )
             return JSONResponse(body)
         except Exception as e:
+            logger.exception(
+                "scrape failed url=%s elapsed=%.1fs", req.url, time.monotonic() - t0
+            )
             return JSONResponse(
                 status_code=500,
-                content={"error": f"An error occurred while fetching the page: {e}"},
+                content={"error": f"An error occurred while fetching the page: {type(e).__name__}: {e}"},
             )
         finally:
             if page:
