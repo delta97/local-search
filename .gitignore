@@ -19,3 +19,13 @@ node_modules/
 # OS
 .DS_Store
 .gstack/
+
+# AI agent / editor tool directories
+.agents/
+.claude/
+.codex/
+.cursor/
+.gemini/
+.kiro/
+.opencode/
+.rovodev/
