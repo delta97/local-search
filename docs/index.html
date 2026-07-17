@@ -259,7 +259,7 @@
       <div class="comp-card">
         <div class="comp-name"><i data-lucide="cpu" class="icon"></i> MCP server</div>
         <div class="comp-port">stdio</div>
-        <p>Node.js stdio MCP server wrapping the gateway into <code>web_search</code> and <code>fetch_page</code> tools.</p>
+        <p>Node.js stdio MCP server wrapping the gateway into <code>web_search</code>, <code>fetch_page</code>, <code>crawl_site</code>, and <code>map_site</code> tools.</p>
       </div>
     </div>
   </section>
@@ -371,6 +371,12 @@ curl http://localhost:8088/healthz
         <tr><td><code>categories</code></td><td>string</td><td>"general"</td><td>SearXNG category: <code>general</code>, <code>news</code>, <code>it</code>, <code>science</code>, …</td></tr>
         <tr><td><code>language</code></td><td>string</td><td>"en"</td><td>Language/locale code</td></tr>
         <tr><td><code>time_range</code></td><td>string</td><td>null</td><td><code>day</code>, <code>week</code>, <code>month</code>, or <code>year</code></td></tr>
+        <tr><td><code>fetch_formats</code></td><td>string[]</td><td>["markdown"]</td><td>Per-result scrape formats (when <code>fetch_content</code>): markdown/html/rawHtml/links/json/screenshot</td></tr>
+        <tr><td><code>fetch_stealth</code></td><td>boolean</td><td>false</td><td>Route enriched scrapes through the Camoufox anti-detect browser</td></tr>
+        <tr><td><code>include_domains</code></td><td>string[] (≤10)</td><td>null</td><td>Only return results whose host matches one of these (subdomains included)</td></tr>
+        <tr><td><code>exclude_domains</code></td><td>string[] (≤10)</td><td>null</td><td>Drop results whose host matches any of these</td></tr>
+        <tr><td><code>start_date</code> / <code>end_date</code></td><td>string (YYYY-MM-DD)</td><td>null</td><td>Drop results published outside the window; undated results are kept</td></tr>
+        <tr><td><code>include_answer</code></td><td>boolean | "basic" | "advanced"</td><td>false</td><td>Synthesize a cited answer over top results (needs <code>OPENROUTER_API_KEY</code>). <code>advanced</code> also uses scraped content when <code>fetch_content</code> is on</td></tr>
       </table>
     </div>
 
@@ -403,7 +409,10 @@ curl -X POST http://localhost:8088/search \
       <span class="str">"published_date"</span>: <span class="str">"..."</span>,
       <span class="str">"content"</span>: <span class="str">"… full page markdown …"</span>  <span class="comment">// only when fetch_content=true</span>
     }
-  ]
+  ],
+  <span class="str">"answer"</span>: <span class="str">"… cited answer with [1] markers …"</span>,  <span class="comment">// only when include_answer</span>
+  <span class="str">"answer_model"</span>: <span class="str">"openai/gpt-4o-mini"</span>
+  <span class="comment">// answer_error instead, if synthesis was skipped or failed</span>
 }</pre>
 
     <!-- fetch -->
@@ -411,18 +420,30 @@ curl -X POST http://localhost:8088/search \
     <div class="endpoint">
       <span class="method post">POST</span>
       <span class="path">/fetch</span>
-      <span class="endpoint-desc">Fetch a single URL and return it as clean markdown</span>
+      <span class="endpoint-desc">Fetch one URL — or a batch of up to 20 — as clean markdown</span>
     </div>
 
     <h4>Parameters</h4>
     <div class="table-wrap">
       <table>
         <tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr>
-        <tr><td><code>url</code></td><td>string</td><td><span class="req">required</span></td><td>URL to fetch</td></tr>
+        <tr><td><code>url</code></td><td>string</td><td><span class="req">one of</span></td><td>Single URL to fetch (exactly one of url/urls)</td></tr>
+        <tr><td><code>urls</code></td><td>string[] (1–20)</td><td><span class="req">one of</span></td><td>Batch of URLs, fetched concurrently</td></tr>
+        <tr><td><code>formats</code></td><td>string[]</td><td>["markdown"]</td><td>markdown/html/rawHtml/links/json/screenshot</td></tr>
         <tr><td><code>only_main_content</code></td><td>boolean</td><td>true</td><td>Strip navigation, footers, and boilerplate</td></tr>
         <tr><td><code>max_chars</code></td><td>integer</td><td>null</td><td>Truncate returned markdown to this many characters</td></tr>
         <tr><td><code>stealth</code></td><td>boolean</td><td>false</td><td>Force rendering via Camoufox anti-detect browser (slower; use for bot-protected sites)</td></tr>
       </table>
+    </div>
+    <div class="callout">
+      <strong>Batch:</strong> pass <code>urls</code> (max 20) instead of <code>url</code> to fetch concurrently.
+      The response is <code>{urls, result_count, failed_count, results: […], failed_results: [{url, error}]}</code> —
+      per-URL failures are isolated so partial batches still return.
+      <br><br>
+      <strong>PDFs:</strong> URLs serving a PDF (by <code>.pdf</code> extension, or content-sniffed when Firecrawl
+      returns empty) are downloaded and parsed locally with <code>pypdf</code> — the response carries
+      <code>is_pdf: true</code> and <code>page_count</code>, with markdown laid out as <code>## Page N</code> sections.
+      Screenshots aren't supported for PDFs; downloads are capped at 20 MB.
     </div>
 
     <h4>Examples</h4>
@@ -452,6 +473,80 @@ curl -X POST http://localhost:8088/fetch \
       <code>stealth: true</code> forces browser rendering (via Camoufox) every time, which is
       slower but much harder to block.
     </div>
+
+    <!-- crawl -->
+    <h3>Crawl</h3>
+    <div class="endpoint">
+      <span class="method post">POST</span>
+      <span class="path">/crawl</span>
+      <span class="endpoint-desc">Crawl a site — follow links and return every page's content</span>
+    </div>
+    <p>
+      A synchronous facade over Firecrawl's async crawl job: the gateway starts the job, polls it to
+      completion, and returns all pages in one response. Use <code>POST /crawl/stream</code> to watch
+      <code>N/M pages</code> progress ticks over SSE.
+    </p>
+    <h4>Parameters</h4>
+    <div class="table-wrap">
+      <table>
+        <tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr>
+        <tr><td><code>url</code></td><td>string</td><td><span class="req">required</span></td><td>Root URL to crawl from</td></tr>
+        <tr><td><code>limit</code></td><td>integer 1–100</td><td>25</td><td>Max pages (hard cap 100)</td></tr>
+        <tr><td><code>max_depth</code></td><td>integer</td><td>null</td><td>Max discovery depth from the root</td></tr>
+        <tr><td><code>include_paths</code> / <code>exclude_paths</code></td><td>string[]</td><td>null</td><td>Regex patterns of URL paths</td></tr>
+        <tr><td><code>crawl_entire_domain</code></td><td>boolean</td><td>false</td><td>Follow sibling/parent URLs, not just children</td></tr>
+        <tr><td><code>allow_subdomains</code> / <code>allow_external_links</code></td><td>boolean</td><td>false</td><td>Widen crawl scope</td></tr>
+        <tr><td><code>sitemap</code></td><td>enum</td><td>"include"</td><td><code>include</code> / <code>skip</code> / <code>only</code></td></tr>
+        <tr><td><code>formats</code></td><td>string[]</td><td>["markdown"]</td><td>Per-page: markdown/html/rawHtml/links/json (no screenshot)</td></tr>
+        <tr><td><code>max_chars</code></td><td>integer</td><td>null</td><td>Per-page markdown truncation</td></tr>
+        <tr><td><code>timeout_s</code></td><td>integer 30–900</td><td>300</td><td>Overall crawl budget; partial pages returned on timeout</td></tr>
+      </table>
+    </div>
+    <h4>Example</h4>
+    <pre>curl -X POST http://localhost:8088/crawl \
+  -H <span class="str">'Content-Type: application/json'</span> \
+  -d <span class="str">'{"url": "https://docs.example.com", "limit": 25,
+       "include_paths": ["/guides/.*"], "formats": ["markdown","json"]}'</span></pre>
+    <h4>Response shape</h4>
+    <pre>{
+  <span class="str">"url"</span>: <span class="str">"https://docs.example.com"</span>,
+  <span class="str">"job_id"</span>: <span class="str">"…"</span>,
+  <span class="str">"status"</span>: <span class="str">"completed"</span>,   <span class="comment">// completed | timeout | failed</span>
+  <span class="str">"partial"</span>: <span class="kw">false</span>,
+  <span class="str">"total"</span>: <span class="num">25</span>,
+  <span class="str">"page_count"</span>: <span class="num">25</span>,
+  <span class="str">"pages"</span>: [ { <span class="str">"url"</span>: <span class="str">"…"</span>, <span class="str">"title"</span>: <span class="str">"…"</span>, <span class="str">"markdown"</span>: <span class="str">"…"</span> } ]
+}</pre>
+    <div class="callout">
+      Timeout or failure with partial pages returns HTTP 200 with <code>status</code>/<code>partial</code> markers
+      (not an error), so you keep whatever was crawled. Screenshots aren't supported for crawls.
+    </div>
+
+    <!-- map -->
+    <h3>Map</h3>
+    <div class="endpoint">
+      <span class="method post">POST</span>
+      <span class="path">/map</span>
+      <span class="endpoint-desc">Discover a site's URLs without scraping content</span>
+    </div>
+    <p>Fast sitemap + link discovery — useful for scoping a crawl before running one.</p>
+    <h4>Parameters</h4>
+    <div class="table-wrap">
+      <table>
+        <tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr>
+        <tr><td><code>url</code></td><td>string</td><td><span class="req">required</span></td><td>Site to map</td></tr>
+        <tr><td><code>search</code></td><td>string</td><td>null</td><td>Filter/rank discovered links by this term</td></tr>
+        <tr><td><code>limit</code></td><td>integer 1–5000</td><td>100</td><td>Max URLs to return</td></tr>
+        <tr><td><code>include_subdomains</code></td><td>boolean</td><td>true</td><td>Include links on subdomains</td></tr>
+        <tr><td><code>sitemap</code></td><td>enum</td><td>"include"</td><td><code>include</code> / <code>skip</code> / <code>only</code></td></tr>
+      </table>
+    </div>
+    <h4>Example</h4>
+    <pre>curl -X POST http://localhost:8088/map \
+  -H <span class="str">'Content-Type: application/json'</span> \
+  -d <span class="str">'{"url": "https://docs.example.com", "search": "guide", "limit": 100}'</span>
+
+<span class="comment"># Response: {url, link_count, links: [{url, title?, description?}]}</span></pre>
   </section>
 
   <!-- MCP server -->
@@ -462,7 +557,8 @@ curl -X POST http://localhost:8088/fetch \
     </div>
     <p>
       A Node.js stdio MCP server ships in <code>mcp-server/</code>. It wraps the gateway's
-      two endpoints into MCP tools that any MCP-compatible LLM client can call.
+      endpoints into four MCP tools — <code>web_search</code>, <code>fetch_page</code>,
+      <code>crawl_site</code>, <code>map_site</code> — that any MCP-compatible LLM client can call.
     </p>
 
     <h3>Register with Claude Code</h3>
@@ -493,20 +589,53 @@ curl -X POST http://localhost:8088/fetch \
           <tr><td><code>fetch_content</code></td><td>boolean</td><td>false</td><td>Scrape top results into markdown</td></tr>
           <tr><td><code>fetch_top</code></td><td>integer</td><td>3</td><td>How many top results to scrape</td></tr>
           <tr><td><code>time_range</code></td><td>enum</td><td>—</td><td><code>day</code> / <code>week</code> / <code>month</code> / <code>year</code></td></tr>
+          <tr><td><code>include_domains</code> / <code>exclude_domains</code></td><td>string[]</td><td>—</td><td>Domain allow/deny (subdomains included)</td></tr>
+          <tr><td><code>start_date</code> / <code>end_date</code></td><td>string</td><td>—</td><td>YYYY-MM-DD publish-date window</td></tr>
+          <tr><td><code>include_answer</code></td><td>bool | "basic" | "advanced"</td><td>false</td><td>Synthesize a cited answer (needs OPENROUTER_API_KEY)</td></tr>
         </table>
       </div>
     </div>
 
     <div class="card">
       <h4><i data-lucide="globe" class="icon" style="color:var(--amber)"></i> fetch_page</h4>
-      <p>Fetch a single URL via Firecrawl and return its content as clean markdown.</p>
+      <p>Fetch one URL — or a batch of up to 20 — via Firecrawl and return content as clean markdown. PDF URLs are parsed locally.</p>
       <div class="table-wrap" style="margin-top:12px">
         <table>
           <tr><th>Parameter</th><th>Type</th><th>Default</th><th>Description</th></tr>
-          <tr><td><code>url</code></td><td>string</td><td><span class="req">required</span></td><td>URL to fetch</td></tr>
+          <tr><td><code>url</code> / <code>urls</code></td><td>string / string[] (1–20)</td><td><span class="req">one of</span></td><td>Single URL, or a batch fetched concurrently</td></tr>
+          <tr><td><code>formats</code></td><td>string[]</td><td>["markdown"]</td><td>markdown/html/rawHtml/links/json/screenshot</td></tr>
           <tr><td><code>only_main_content</code></td><td>boolean</td><td>true</td><td>Strip nav/footer boilerplate</td></tr>
           <tr><td><code>max_chars</code></td><td>integer</td><td>—</td><td>Truncate markdown to this many chars</td></tr>
           <tr><td><code>stealth</code></td><td>boolean</td><td>false</td><td>Force Camoufox anti-detect browser</td></tr>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h4><i data-lucide="waypoints" class="icon" style="color:var(--amber)"></i> crawl_site</h4>
+      <p>Crawl a website — follow links from a root URL and return every page's content. Slow; keep <code>limit</code> small and use <code>include_paths</code> to focus.</p>
+      <div class="table-wrap" style="margin-top:12px">
+        <table>
+          <tr><th>Parameter</th><th>Type</th><th>Default</th><th>Description</th></tr>
+          <tr><td><code>url</code></td><td>string</td><td><span class="req">required</span></td><td>Root URL to crawl from</td></tr>
+          <tr><td><code>limit</code></td><td>integer 1–100</td><td>25</td><td>Max pages (hard cap 100)</td></tr>
+          <tr><td><code>include_paths</code> / <code>exclude_paths</code></td><td>string[]</td><td>—</td><td>Regex patterns of URL paths</td></tr>
+          <tr><td><code>formats</code></td><td>string[]</td><td>["markdown"]</td><td>Per-page formats (no screenshot)</td></tr>
+          <tr><td><code>timeout_s</code></td><td>integer 30–900</td><td>300</td><td>Overall crawl budget</td></tr>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h4><i data-lucide="map" class="icon" style="color:var(--amber)"></i> map_site</h4>
+      <p>Discover a site's URLs (sitemap + link discovery) without scraping page content. Fast; use before <code>crawl_site</code> to scope a crawl.</p>
+      <div class="table-wrap" style="margin-top:12px">
+        <table>
+          <tr><th>Parameter</th><th>Type</th><th>Default</th><th>Description</th></tr>
+          <tr><td><code>url</code></td><td>string</td><td><span class="req">required</span></td><td>Site to map</td></tr>
+          <tr><td><code>search</code></td><td>string</td><td>—</td><td>Filter/rank links by term</td></tr>
+          <tr><td><code>limit</code></td><td>integer</td><td>100</td><td>Max URLs to return</td></tr>
+          <tr><td><code>sitemap</code></td><td>enum</td><td>"include"</td><td><code>include</code> / <code>skip</code> / <code>only</code></td></tr>
         </table>
       </div>
     </div>
@@ -553,6 +682,22 @@ curl -X POST http://localhost:3002/v2/search \
     <div class="section-header">
       <i data-lucide="settings" class="icon"></i>
       <h2>Configuration</h2>
+    </div>
+
+    <h3>Answer synthesis (OpenRouter)</h3>
+    <p>
+      <code>/search</code>'s <code>include_answer</code> calls an OpenAI-compatible chat endpoint
+      (OpenRouter by default) to synthesize a cited answer. Set these in a local <code>.env</code>
+      (gitignored; see <code>.env.example</code>) — <code>docker compose up -d gateway</code> passes them through.
+      Without a key, search still works and the answer is skipped with an <code>answer_error</code>.
+    </p>
+    <div class="table-wrap">
+      <table>
+        <tr><th>Variable</th><th>Default</th><th>Description</th></tr>
+        <tr><td><code>OPENROUTER_API_KEY</code></td><td><em>(unset)</em></td><td>Required to enable answers</td></tr>
+        <tr><td><code>ANSWER_MODEL</code></td><td><code>openai/gpt-4o-mini</code></td><td>Any model slug the endpoint accepts</td></tr>
+        <tr><td><code>ANSWER_BASE_URL</code></td><td><code>https://openrouter.ai/api/v1</code></td><td>Override for Ollama/vLLM/any OpenAI-compatible server</td></tr>
+      </table>
     </div>
 
     <h3>Browser engine</h3>

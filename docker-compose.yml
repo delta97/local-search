@@ -148,6 +148,10 @@ services:
       FIRECRAWL_URL: http://api:3002
       CAMOUFOX_URL: http://camoufox:3000
       HISTORY_DB: /data/history.db
+      # Answer synthesis (optional) — set these in a local .env file
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      ANSWER_MODEL: ${ANSWER_MODEL:-openai/gpt-4o-mini}
+      ANSWER_BASE_URL: ${ANSWER_BASE_URL:-https://openrouter.ai/api/v1}
     volumes:
       - gateway-data:/data
     depends_on:

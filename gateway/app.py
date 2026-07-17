@@ -930,6 +930,50 @@ async def healthz():
     return status
 
 
+# ── Answer synthesis via OpenRouter (or any OpenAI-compatible endpoint) ──
+
+async def synthesize_answer(
+    query: str, results: list[dict[str, Any]], mode: str, log: RunLog
+) -> dict[str, Any]:
+    sources = results[:5] if mode == "basic" else results[:8]
+    blocks = []
+    for i, r in enumerate(sources, 1):
+        text = f"[{i}] {r.get('title')}\nURL: {r.get('url')}\n{r.get('snippet') or ''}"
+        if mode == "advanced" and r.get("content"):
+            text += "\nExcerpt:\n" + r["content"][:3000]
+        blocks.append(text)
+    log.emit("answer", f"synthesizing answer from {len(sources)} sources via {ANSWER_MODEL}")
+    r = await client.post(
+        f"{ANSWER_BASE_URL}/chat/completions",
+        headers={
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "HTTP-Referer": "http://localhost:8088",
+            "X-Title": "local-search",
+        },
+        json={
+            "model": ANSWER_MODEL,
+            "max_tokens": 700 if mode == "basic" else 1200,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "Answer the question using ONLY the numbered sources provided. "
+                    "Cite sources with [n] after each claim. If the sources are insufficient "
+                    "to answer, say so plainly.",
+                },
+                {
+                    "role": "user",
+                    "content": f"Question: {query}\n\nSources:\n\n" + "\n\n".join(blocks),
+                },
+            ],
+        },
+        timeout=httpx.Timeout(60.0, connect=10.0),
+    )
+    r.raise_for_status()
+    text = r.json()["choices"][0]["message"]["content"]
+    log.emit("answer", f"answer ready ({len(text)} chars)")
+    return {"answer": text, "answer_model": ANSWER_MODEL}
+
+
 async def _run_search(req: SearchRequest, log: RunLog) -> dict[str, Any]:
     results = await searx_search(req, log)
     if req.fetch_content and results:
@@ -968,7 +1012,22 @@ async def _run_search(req: SearchRequest, log: RunLog) -> dict[str, Any]:
 
         await asyncio.gather(*(safe_scrape(item) for item in top))
         log.emit("enrich", "enrichment complete")
-    return {"query": req.query, "result_count": len(results), "results": results}
+
+    out: dict[str, Any] = {"query": req.query, "result_count": len(results), "results": results}
+    mode = "basic" if req.include_answer is True else req.include_answer
+    if mode:  # answer synthesis is best-effort — never fails the search
+        if not OPENROUTER_API_KEY:
+            out["answer_error"] = "OPENROUTER_API_KEY not configured — set it in .env"
+            log.emit("answer", "skipped: no OPENROUTER_API_KEY configured")
+        elif not results:
+            out["answer_error"] = "no results to answer from"
+        else:
+            try:
+                out.update(await synthesize_answer(req.query, results, mode, log))
+            except Exception as e:
+                out["answer_error"] = f"answer synthesis failed: {e}"
+                log.emit("answer", out["answer_error"])
+    return out
 
 
 def _search_summary(result: dict[str, Any]) -> dict[str, Any]:
@@ -980,6 +1039,8 @@ def _search_summary(result: dict[str, Any]) -> dict[str, Any]:
         ),
         "scrape_errors": sum(1 for r in results if "content_error" in r),
         "screenshots": sum(1 for r in results if "screenshot" in r),
+        "answer": "answer" in result,
+        **({"answer_error": result["answer_error"]} if result.get("answer_error") else {}),
     }
 
 
@@ -1004,6 +1065,7 @@ def _fetch_summary(page: dict[str, Any]) -> dict[str, Any]:
         "screenshot": "screenshot" in page,
         "screenshot_error": page.get("screenshot_error"),
         "screenshot_note": page.get("screenshot_note"),
+        **({"pdf_pages": page["page_count"]} if page.get("is_pdf") else {}),
     }
 
 
@@ -1090,7 +1152,22 @@ async def search_get(
     pageno: int = 1,
     safesearch: int = 0,
     time_range: str | None = None,
+    include_domains: str | None = None,
+    exclude_domains: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    include_answer: str | None = None,
 ):
+    def _split(csv: str | None) -> list[str] | None:
+        parts = [p.strip() for p in (csv or "").split(",") if p.strip()]
+        return parts or None
+
+    answer: bool | str = False
+    if include_answer in ("true", "1", "basic"):
+        answer = "basic"
+    elif include_answer == "advanced":
+        answer = "advanced"
+
     req = SearchRequest(
         query=q,
         max_results=max_results,
@@ -1104,6 +1181,11 @@ async def search_get(
         pageno=pageno,
         safesearch=safesearch,
         time_range=time_range,
+        include_domains=_split(include_domains),
+        exclude_domains=_split(exclude_domains),
+        start_date=start_date,
+        end_date=end_date,
+        include_answer=answer,
     )
     log = RunLog("search", req.query)
     return await _run_recorded(
@@ -1167,4 +1249,282 @@ async def fetch_stream(req: FetchRequest):
     label = _fetch_label(req)
     return _stream_response(
         "fetch", label, req.model_dump(), lambda l: _run_fetch(req, l), _fetch_summary
+    )
+
+
+# ── Map: discover a site's URLs via Firecrawl (no scraping) ──
+
+class MapRequest(BaseModel):
+    url: str = Field(..., description="Site to map")
+    search: str | None = Field(None, description="Filter/rank discovered links by this term")
+    limit: int = Field(100, ge=1, le=5000, description="Max URLs to return")
+    include_subdomains: bool = Field(True, description="Include links on subdomains")
+    ignore_query_parameters: bool = Field(
+        True, description="Collapse URLs that differ only by query string"
+    )
+    sitemap: str = Field(
+        "include", pattern="^(skip|include|only)$",
+        description="Sitemap usage: 'include' (default), 'skip', or 'only'",
+    )
+    timeout: int | None = Field(None, description="Upstream map timeout in ms")
+
+
+async def _run_map(req: MapRequest, log: RunLog) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "url": req.url,
+        "limit": req.limit,
+        "sitemap": req.sitemap,
+        "includeSubdomains": req.include_subdomains,
+        "ignoreQueryParameters": req.ignore_query_parameters,
+    }
+    if req.search:
+        payload["search"] = req.search
+    if req.timeout:
+        payload["timeout"] = req.timeout
+    log.emit("map", f"mapping {req.url} (sitemap={req.sitemap}, limit={req.limit})")
+    try:
+        r = await client.post(f"{FIRECRAWL_URL}/v2/map", json=payload, headers=FIRECRAWL_HEADERS)
+        r.raise_for_status()
+    except httpx.HTTPError as e:
+        log.emit("map", f"firecrawl map error for {req.url}: {e}")
+        raise HTTPException(status_code=502, detail=f"Firecrawl map error for {req.url}: {e}") from e
+    body = r.json()
+    if not body.get("success"):
+        raise HTTPException(
+            status_code=502, detail=f"Firecrawl map failed for {req.url}: {body.get('error')}"
+        )
+    # Older Firecrawl versions return bare URL strings; v2 returns objects.
+    links = [l if isinstance(l, dict) else {"url": l} for l in body.get("links", [])]
+    log.emit("map", f"discovered {len(links)} links")
+    return {"url": req.url, "link_count": len(links), "links": links}
+
+
+def _map_summary(result: dict[str, Any]) -> dict[str, Any]:
+    return {"link_count": result.get("link_count", 0)}
+
+
+@app.post("/map")
+async def map_site(req: MapRequest):
+    log = RunLog("map", req.url)
+    return await _run_recorded(
+        "map", req.url, req.model_dump(), lambda l: _run_map(req, l), _map_summary, log
+    )
+
+
+@app.post("/map/stream")
+async def map_stream(req: MapRequest):
+    return _stream_response(
+        "map", req.url, req.model_dump(), lambda l: _run_map(req, l), _map_summary
+    )
+
+
+# ── Crawl: sync facade over Firecrawl's async crawl job API ──
+
+class CrawlRequest(BaseModel):
+    url: str = Field(..., description="Root URL to crawl from")
+    limit: int = Field(
+        25, ge=1, le=CRAWL_MAX_LIMIT, description=f"Max pages (hard cap {CRAWL_MAX_LIMIT})"
+    )
+    max_depth: int | None = Field(None, ge=0, description="Max discovery depth from the root URL")
+    include_paths: list[str] | None = Field(None, description="Regex patterns of URL paths to crawl")
+    exclude_paths: list[str] | None = Field(None, description="Regex patterns of URL paths to skip")
+    crawl_entire_domain: bool = Field(
+        False, description="Follow sibling/parent URLs, not just child paths"
+    )
+    allow_subdomains: bool = Field(False, description="Follow links onto subdomains")
+    allow_external_links: bool = Field(False, description="Follow links to other domains")
+    ignore_query_parameters: bool = Field(
+        True, description="Don't re-scrape the same path with different query strings"
+    )
+    sitemap: str = Field(
+        "include", pattern="^(skip|include|only)$",
+        description="Sitemap usage: 'include' (default), 'skip', or 'only'",
+    )
+    delay: float | None = Field(None, ge=0, description="Seconds between page scrapes")
+    formats: list[str] = Field(
+        ["markdown"],
+        description="Per-page formats: markdown/html/rawHtml/links/json (screenshots unsupported)",
+    )
+    only_main_content: bool = Field(True, description="Strip nav/footer boilerplate")
+    max_chars: int | None = Field(None, description="Per-page markdown truncation")
+    timeout_s: int = Field(300, ge=30, le=900, description="Overall crawl budget in seconds")
+
+
+CRAWL_POLL_INTERVAL = 2.0
+CRAWL_POLL_TIMEOUT = httpx.Timeout(15.0, connect=10.0)
+
+
+def _firecrawl_local_url(reported: str) -> str:
+    """Rewrite a Firecrawl self-reported URL onto FIRECRAWL_URL — the
+    self-hosted image reports a base origin that may not resolve from
+    this container."""
+    p = urlparse(reported)
+    return f"{FIRECRAWL_URL}{p.path}" + (f"?{p.query}" if p.query else "")
+
+
+async def _run_crawl(req: CrawlRequest, log: RunLog) -> dict[str, Any]:
+    formats = list(req.formats) if req.formats else ["markdown"]
+    if "screenshot" in formats:
+        raise HTTPException(
+            status_code=400,
+            detail="screenshots are not supported for crawls — fetch individual pages instead",
+        )
+    bad = [f for f in formats if f not in SUPPORTED_FORMATS]
+    if bad:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported format(s): {bad}. Supported: {sorted(SUPPORTED_FORMATS - {'screenshot'})}",
+        )
+    want_json = "json" in formats
+    # json is derived from markdown server-side, so ensure markdown is scraped.
+    fc_formats = [f for f in formats if f != "json"]
+    if want_json and "markdown" not in fc_formats:
+        fc_formats.append("markdown")
+
+    payload: dict[str, Any] = {
+        "url": req.url,
+        "limit": req.limit,
+        "sitemap": req.sitemap,
+        "ignoreQueryParameters": req.ignore_query_parameters,
+        "crawlEntireDomain": req.crawl_entire_domain,
+        "allowSubdomains": req.allow_subdomains,
+        "allowExternalLinks": req.allow_external_links,
+        "scrapeOptions": {"formats": fc_formats, "onlyMainContent": req.only_main_content},
+    }
+    if req.max_depth is not None:
+        payload["maxDiscoveryDepth"] = req.max_depth
+    if req.include_paths:
+        payload["includePaths"] = req.include_paths
+    if req.exclude_paths:
+        payload["excludePaths"] = req.exclude_paths
+    if req.delay is not None:
+        payload["delay"] = req.delay
+
+    t0 = time.monotonic()
+    try:
+        r = await client.post(
+            f"{FIRECRAWL_URL}/v2/crawl", json=payload,
+            headers=FIRECRAWL_HEADERS, timeout=CRAWL_POLL_TIMEOUT,
+        )
+        r.raise_for_status()
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"Firecrawl crawl error for {req.url}: {e}") from e
+    body = r.json()
+    job_id = body.get("id")
+    if not body.get("success") or not job_id:
+        raise HTTPException(
+            status_code=502, detail=f"Firecrawl crawl failed to start for {req.url}: {body.get('error')}"
+        )
+    log.emit("crawl", f"started crawl job {job_id} (limit {req.limit})")
+
+    status: dict[str, Any] = {}
+    state = "scraping"
+    last_progress: tuple[Any, Any] | None = None
+    timed_out = False
+    while True:
+        if time.monotonic() - t0 >= req.timeout_s:
+            timed_out = True
+            break
+        try:
+            s = await client.get(
+                f"{FIRECRAWL_URL}/v2/crawl/{job_id}",
+                headers=FIRECRAWL_HEADERS, timeout=CRAWL_POLL_TIMEOUT,
+            )
+            s.raise_for_status()
+            status = s.json()
+        except httpx.HTTPError as e:
+            log.emit("crawl", f"poll failed (will retry): {e}")
+            await asyncio.sleep(CRAWL_POLL_INTERVAL)
+            continue
+        state = status.get("status", "scraping")
+        progress = (status.get("completed", 0), state)
+        if progress != last_progress:
+            log.emit("crawl", f"{status.get('completed', 0)}/{status.get('total', '?')} pages ({state})")
+            last_progress = progress
+        if state in ("completed", "failed", "cancelled"):
+            break
+        await asyncio.sleep(CRAWL_POLL_INTERVAL)
+
+    if timed_out:
+        log.emit("crawl", f"crawl budget of {req.timeout_s}s exhausted — cancelling job")
+        try:
+            await client.delete(
+                f"{FIRECRAWL_URL}/v2/crawl/{job_id}",
+                headers=FIRECRAWL_HEADERS, timeout=CRAWL_POLL_TIMEOUT,
+            )
+        except httpx.HTTPError:
+            pass
+
+    # Collect pages (follow pagination on completed crawls).
+    raw_pages: list[dict[str, Any]] = list(status.get("data") or [])
+    next_url = status.get("next") if state == "completed" else None
+    while next_url:
+        try:
+            s = await client.get(
+                _firecrawl_local_url(next_url), headers=FIRECRAWL_HEADERS, timeout=CRAWL_POLL_TIMEOUT
+            )
+            s.raise_for_status()
+        except httpx.HTTPError as e:
+            log.emit("crawl", f"pagination fetch failed, returning partial pages: {e}")
+            break
+        chunk = s.json()
+        raw_pages.extend(chunk.get("data") or [])
+        next_url = chunk.get("next")
+
+    final_status = "completed" if state == "completed" else ("timeout" if timed_out else "failed")
+    error = status.get("error")
+    if final_status != "completed" and not raw_pages:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Crawl {final_status} for {req.url} with no pages"
+            + (f": {error}" if error else ""),
+        )
+
+    pages = []
+    for data in raw_pages:
+        page = _normalize_fc_page(data, formats)
+        if want_json:
+            structure = markdown_to_structured(data.get("markdown") or "")
+            page["json"] = {"title": page.get("title"), "url": page.get("url"), **structure}
+            if "markdown" not in formats:
+                page.pop("markdown", None)
+        pages.append(_apply_max_chars(page, req.max_chars))
+    if want_json:
+        log.emit("structure", f"derived structured json for {len(pages)} pages")
+    log.emit("crawl", f"crawl {final_status}: {len(pages)} pages")
+
+    return {
+        "url": req.url,
+        "job_id": job_id,
+        "status": final_status,
+        "partial": final_status != "completed",
+        "total": status.get("total"),
+        "page_count": len(pages),
+        "formats": formats,
+        "pages": pages,
+        **({"error": error} if error else {}),
+    }
+
+
+def _crawl_summary(result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": result.get("status"),
+        "page_count": result.get("page_count", 0),
+        "total": result.get("total"),
+        "formats": result.get("formats"),
+    }
+
+
+@app.post("/crawl")
+async def crawl_site(req: CrawlRequest):
+    log = RunLog("crawl", req.url)
+    return await _run_recorded(
+        "crawl", req.url, req.model_dump(), lambda l: _run_crawl(req, l), _crawl_summary, log
+    )
+
+
+@app.post("/crawl/stream")
+async def crawl_stream(req: CrawlRequest):
+    return _stream_response(
+        "crawl", req.url, req.model_dump(), lambda l: _run_crawl(req, l), _crawl_summary
     )

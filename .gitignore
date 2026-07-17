@@ -11,6 +11,11 @@ node_modules/
 # Docker volumes / runtime state
 *.log
 
+# Secrets / local env
+.env
+.env.*
+!.env.example
+
 # OS
 .DS_Store
 .gstack/

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // MCP server for the local-search pipeline (SearXNG + Firecrawl behind the gateway API).
-// Tools: web_search (search the web), fetch_page (get a page as markdown).
+// Tools: web_search (search the web, optional cited answer), fetch_page (one URL or a
+// batch of up to 20, PDFs included), crawl_site (multi-page crawl), map_site (URL discovery).
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -13,12 +14,12 @@ const server = new McpServer({
   version: "1.0.0",
 });
 
-async function callGateway(path, body) {
+async function callGateway(path, body, timeoutMs = 120_000) {
   const res = await fetch(`${GATEWAY_URL}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(120_000),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
@@ -84,6 +85,31 @@ server.registerTool(
         .enum(["day", "week", "month", "year"])
         .optional()
         .describe("Restrict results to a recent time window"),
+      include_domains: z
+        .array(z.string())
+        .max(10)
+        .optional()
+        .describe("Only return results from these domains (subdomains match too)"),
+      exclude_domains: z
+        .array(z.string())
+        .max(10)
+        .optional()
+        .describe("Drop results from these domains"),
+      start_date: z
+        .string()
+        .optional()
+        .describe("YYYY-MM-DD; drop results published before this (undated results kept)"),
+      end_date: z
+        .string()
+        .optional()
+        .describe("YYYY-MM-DD; drop results published after this (undated results kept)"),
+      include_answer: z
+        .union([z.boolean(), z.enum(["basic", "advanced"])])
+        .default(false)
+        .describe(
+          "Synthesize a cited answer from top results via LLM (needs OPENROUTER_API_KEY " +
+            "on the gateway). 'advanced' also uses scraped content when fetch_content=true"
+        ),
     },
   },
   async ({
@@ -99,6 +125,11 @@ server.registerTool(
     pageno,
     safesearch,
     time_range,
+    include_domains,
+    exclude_domains,
+    start_date,
+    end_date,
+    include_answer,
   }) => {
     const data = await callGateway("/search", {
       query,
@@ -113,6 +144,11 @@ server.registerTool(
       pageno,
       safesearch,
       time_range: time_range ?? null,
+      include_domains: include_domains ?? null,
+      exclude_domains: exclude_domains ?? null,
+      start_date: start_date ?? null,
+      end_date: end_date ?? null,
+      include_answer,
     });
     return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
   }
@@ -123,11 +159,18 @@ server.registerTool(
   {
     title: "Fetch page",
     description:
-      "Fetch a single web page via self-hosted Firecrawl (headless browser) and return its " +
-      "content in the requested formats (markdown by default). Use for reading a specific URL. " +
-      "For bot-protected sites set stealth=true to force the Camoufox anti-detect browser.",
+      "Fetch one web page (url) or a batch of up to 20 (urls) via self-hosted Firecrawl " +
+      "(headless browser) and return content in the requested formats (markdown by default). " +
+      "PDF URLs are parsed locally into per-page markdown. For bot-protected sites set " +
+      "stealth=true to force the Camoufox anti-detect browser.",
     inputSchema: {
-      url: z.string().url().describe("The URL to fetch"),
+      url: z.string().url().optional().describe("The URL to fetch (exactly one of url/urls)"),
+      urls: z
+        .array(z.string().url())
+        .min(1)
+        .max(20)
+        .optional()
+        .describe("Batch: up to 20 URLs fetched concurrently (exactly one of url/urls)"),
       formats: z
         .array(z.enum(FORMAT_ENUMS))
         .default(["markdown"])
@@ -195,6 +238,7 @@ server.registerTool(
   },
   async ({
     url,
+    urls,
     formats,
     only_main_content,
     include_tags,
@@ -207,24 +251,123 @@ server.registerTool(
     actions,
     stealth,
   }) => {
-    const data = await callGateway("/fetch", {
-      url,
-      formats,
-      only_main_content,
-      include_tags: include_tags ?? null,
-      exclude_tags: exclude_tags ?? null,
-      max_chars: max_chars ?? null,
-      max_tokens: max_tokens ?? null,
-      wait_for: wait_for ?? null,
-      timeout: timeout ?? null,
-      location: location ?? null,
-      actions: actions ?? null,
-      stealth,
-    });
+    if (Boolean(url) === Boolean(urls)) {
+      throw new Error("Provide exactly one of 'url' or 'urls'");
+    }
+    const data = await callGateway(
+      "/fetch",
+      {
+        url: url ?? null,
+        urls: urls ?? null,
+        formats,
+        only_main_content,
+        include_tags: include_tags ?? null,
+        exclude_tags: exclude_tags ?? null,
+        max_chars: max_chars ?? null,
+        max_tokens: max_tokens ?? null,
+        wait_for: wait_for ?? null,
+        timeout: timeout ?? null,
+        location: location ?? null,
+        actions: actions ?? null,
+        stealth,
+      },
+      urls ? 300_000 : 120_000
+    );
+    return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+  }
+);
+
+const CRAWL_FORMAT_ENUMS = ["markdown", "html", "rawHtml", "links", "json"];
+
+server.registerTool(
+  "crawl_site",
+  {
+    title: "Crawl site",
+    description:
+      "Crawl a website via self-hosted Firecrawl: follow links from a root URL and return " +
+      "the content of every crawled page. Slow (can take minutes) and returns many pages — " +
+      "keep limit small and use include_paths to focus. For a lightweight URL inventory " +
+      "without scraping, use map_site instead.",
+    inputSchema: {
+      url: z.string().url().describe("Root URL to crawl from"),
+      limit: z.number().int().min(1).max(100).default(25).describe("Max pages (hard cap 100)"),
+      max_depth: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .describe("Max discovery depth from the root URL"),
+      include_paths: z
+        .array(z.string())
+        .optional()
+        .describe("Regex patterns of URL paths to crawl, e.g. ['/blog/.*']"),
+      exclude_paths: z
+        .array(z.string())
+        .optional()
+        .describe("Regex patterns of URL paths to skip"),
+      crawl_entire_domain: z
+        .boolean()
+        .default(false)
+        .describe("Follow sibling/parent URLs, not just child paths of the root"),
+      allow_subdomains: z.boolean().default(false).describe("Follow links onto subdomains"),
+      formats: z
+        .array(z.enum(CRAWL_FORMAT_ENUMS))
+        .default(["markdown"])
+        .describe("Per-page output formats (screenshots not supported for crawls)"),
+      max_chars: z
+        .number()
+        .int()
+        .min(1000)
+        .optional()
+        .describe("Per-page markdown truncation"),
+      timeout_s: z
+        .number()
+        .int()
+        .min(30)
+        .max(900)
+        .default(300)
+        .describe("Overall crawl budget in seconds; partial pages are returned on timeout"),
+    },
+  },
+  async ({ timeout_s, ...rest }) => {
+    const data = await callGateway(
+      "/crawl",
+      { ...rest, timeout_s },
+      (timeout_s ?? 300) * 1000 + 30_000
+    );
+    return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+  }
+);
+
+server.registerTool(
+  "map_site",
+  {
+    title: "Map site",
+    description:
+      "Discover a website's URLs via self-hosted Firecrawl (sitemap + link discovery) " +
+      "without scraping page content. Fast; use before crawl_site to scope a crawl.",
+    inputSchema: {
+      url: z.string().url().describe("Site to map"),
+      search: z
+        .string()
+        .optional()
+        .describe("Filter/rank discovered links by this term, e.g. 'blog'"),
+      limit: z.number().int().min(1).max(5000).default(100).describe("Max URLs to return"),
+      include_subdomains: z.boolean().default(true).describe("Include links on subdomains"),
+      sitemap: z
+        .enum(["include", "skip", "only"])
+        .default("include")
+        .describe("Sitemap usage: combine with discovery (include), ignore it, or use it alone"),
+    },
+  },
+  async (args) => {
+    const data = await callGateway("/map", { ...args, search: args.search ?? null });
     return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
   }
 );
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
-console.error(`local-search MCP server running (gateway: ${GATEWAY_URL})`);
+console.error(
+  `local-search MCP server running (gateway: ${GATEWAY_URL}; tools: web_search, fetch_page, crawl_site, map_site)`
+);

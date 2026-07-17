@@ -73,12 +73,13 @@
   .row { display: flex; gap: 12px; align-items: stretch; }
   .field { display: grid; gap: 7px; }
   label { font-size: 11px; letter-spacing: .09em; text-transform: uppercase; color: var(--muted); }
-  input[type=text], input[type=url], input[type=number], select {
+  input[type=text], input[type=url], input[type=number], select, textarea {
     font-family: inherit; font-size: 15px; color: var(--ink);
     background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 13px 15px; width: 100%;
     transition: border-color .15s, box-shadow .15s;
   }
-  input:focus, select:focus { outline: none; border-color: var(--amber-dim); box-shadow: 0 0 0 3px rgba(245,184,67,.12); }
+  textarea { resize: vertical; line-height: 1.5; }
+  input:focus, select:focus, textarea:focus { outline: none; border-color: var(--amber-dim); box-shadow: 0 0 0 3px rgba(245,184,67,.12); }
   ::placeholder { color: #52655c; }
 
   .opts { display: flex; gap: 22px; flex-wrap: wrap; align-items: center; }
@@ -244,6 +245,8 @@
   <div class="tabs">
     <button class="tab active" data-tab="search"><i data-lucide="search" class="icon"></i> Search</button>
     <button class="tab" data-tab="fetch"><i data-lucide="globe" class="icon"></i> Fetch page</button>
+    <button class="tab" data-tab="crawl"><i data-lucide="waypoints" class="icon"></i> Crawl</button>
+    <button class="tab" data-tab="map"><i data-lucide="map" class="icon"></i> Map</button>
     <button class="tab" data-tab="history"><i data-lucide="history" class="icon"></i> History</button>
   </div>
 
@@ -272,6 +275,25 @@
             <button type="button" class="pill time-pill" data-val="year">year</button>
           </div>
         </div>
+      </div>
+      <div class="opts">
+        <div class="opt" style="flex:1">
+          <label for="includeDomains" style="text-transform:none;letter-spacing:0">only these domains (comma-sep)</label>
+          <input type="text" id="includeDomains" placeholder="docs.python.org, realpython.com" style="min-width:200px" />
+        </div>
+        <div class="opt" style="flex:1">
+          <label for="excludeDomains" style="text-transform:none;letter-spacing:0">exclude domains (comma-sep)</label>
+          <input type="text" id="excludeDomains" placeholder="reddit.com, pinterest.com" style="min-width:200px" />
+        </div>
+      </div>
+      <div class="opts">
+        <span class="optlabel"><i data-lucide="sparkles" class="icon"></i> answer</span>
+        <div class="pills">
+          <button type="button" class="pill answer-pill active" data-val="">off</button>
+          <button type="button" class="pill answer-pill" data-val="basic">basic</button>
+          <button type="button" class="pill answer-pill" data-val="advanced">advanced</button>
+        </div>
+        <span class="opt" style="font-size:11px;color:#52655c">llm answer over top results · needs OPENROUTER_API_KEY</span>
       </div>
       <div class="opts">
         <label class="opt"><input type="checkbox" id="fetchContent" /> scrape top results</label>
@@ -303,11 +325,15 @@
       <div class="row">
         <div class="field" style="flex:1">
           <label for="url">url</label>
-          <input type="url" id="url" placeholder="https://example.com/article" />
+          <input type="url" id="url" placeholder="https://example.com/article — pdf urls are parsed locally" />
         </div>
         <div class="field" style="align-self:end">
           <button class="go" type="submit">Fetch</button>
         </div>
+      </div>
+      <div class="field">
+        <label for="urlList">batch urls · one per line · max 20 (overrides url above)</label>
+        <textarea id="urlList" rows="3" placeholder="https://a.com&#10;https://b.com/doc.pdf"></textarea>
       </div>
       <div class="opts">
         <label class="opt"><input type="checkbox" id="mainOnly" checked /> main content only</label>
@@ -341,6 +367,84 @@
     <div class="doc" id="fetchResult"></div>
   </section>
 
+  <!-- CRAWL -->
+  <section class="panel" id="panel-crawl" hidden>
+    <form id="crawlForm">
+      <div class="row">
+        <div class="field" style="flex:1">
+          <label for="crawlUrl">root url</label>
+          <input type="url" id="crawlUrl" placeholder="https://docs.example.com" />
+        </div>
+        <div class="field" style="align-self:end">
+          <button class="go" type="submit">Crawl</button>
+        </div>
+      </div>
+      <div class="opts">
+        <div class="opt"><label for="crawlLimit" style="text-transform:none;letter-spacing:0">max pages</label>
+          <input class="mini" type="number" id="crawlLimit" value="25" min="1" max="100" /></div>
+        <div class="opt"><label for="crawlDepth" style="text-transform:none;letter-spacing:0">depth</label>
+          <input class="mini" type="number" id="crawlDepth" placeholder="auto" min="0" style="width:72px" /></div>
+        <div class="opt"><label for="crawlTimeout" style="text-transform:none;letter-spacing:0">budget (s)</label>
+          <input class="mini" type="number" id="crawlTimeout" value="300" min="30" max="900" /></div>
+        <label class="opt"><input type="checkbox" id="crawlEntireDomain" /> entire domain</label>
+        <label class="opt"><input type="checkbox" id="crawlSubdomains" /> subdomains</label>
+      </div>
+      <div class="opts">
+        <div class="opt" style="flex:1">
+          <label for="crawlInclude" style="text-transform:none;letter-spacing:0">include paths (regex, comma-sep)</label>
+          <input type="text" id="crawlInclude" placeholder="/docs/.*, /guides/.*" style="min-width:200px" />
+        </div>
+        <div class="opt" style="flex:1">
+          <label for="crawlExclude" style="text-transform:none;letter-spacing:0">exclude paths (regex, comma-sep)</label>
+          <input type="text" id="crawlExclude" placeholder="/changelog/.*" style="min-width:200px" />
+        </div>
+      </div>
+      <div class="opts">
+        <span class="opt" style="color:var(--muted);font-size:11px;letter-spacing:.09em;text-transform:uppercase">per-page formats</span>
+        <label class="opt"><input type="checkbox" class="cfmt" value="markdown" checked /> markdown</label>
+        <label class="opt"><input type="checkbox" class="cfmt" value="html" /> html</label>
+        <label class="opt"><input type="checkbox" class="cfmt" value="links" /> links</label>
+        <label class="opt"><input type="checkbox" class="cfmt" value="json" /> json (structured)</label>
+      </div>
+    </form>
+    <div class="status" id="crawlStatus"></div>
+    <div class="results" id="crawlResults"></div>
+  </section>
+
+  <!-- MAP -->
+  <section class="panel" id="panel-map" hidden>
+    <form id="mapForm">
+      <div class="row">
+        <div class="field" style="flex:1">
+          <label for="mapUrl">site url</label>
+          <input type="url" id="mapUrl" placeholder="https://docs.example.com" />
+        </div>
+        <div class="field" style="align-self:end">
+          <button class="go" type="submit">Map</button>
+        </div>
+      </div>
+      <div class="opts">
+        <div class="opt" style="flex:1">
+          <label for="mapSearch" style="text-transform:none;letter-spacing:0">filter links by term (optional)</label>
+          <input type="text" id="mapSearch" placeholder="blog" style="min-width:180px" />
+        </div>
+        <div class="opt"><label for="mapLimit" style="text-transform:none;letter-spacing:0">limit</label>
+          <input class="mini" type="number" id="mapLimit" value="100" min="1" max="5000" /></div>
+        <label class="opt"><input type="checkbox" id="mapSubdomains" checked /> subdomains</label>
+        <div class="opt">
+          <span class="optlabel">sitemap</span>
+          <div class="pills">
+            <button type="button" class="pill sitemap-pill active" data-val="include">include</button>
+            <button type="button" class="pill sitemap-pill" data-val="skip">skip</button>
+            <button type="button" class="pill sitemap-pill" data-val="only">only</button>
+          </div>
+        </div>
+      </div>
+    </form>
+    <div class="status" id="mapStatus"></div>
+    <div class="results" id="mapResults"></div>
+  </section>
+
   <!-- HISTORY -->
   <section class="panel" id="panel-history" hidden>
     <div class="hbar">
@@ -354,7 +458,7 @@
     <div class="results" id="historyList"></div>
   </section>
 
-  <footer>gateway <code>:8088</code> · api <code>/search</code> <code>/fetch</code> <code>/history</code> · mcp tools <code>web_search</code> <code>fetch_page</code></footer>
+  <footer>gateway <code>:8088</code> · api <code>/search</code> <code>/fetch</code> <code>/crawl</code> <code>/map</code> <code>/history</code> · mcp tools <code>web_search</code> <code>fetch_page</code> <code>crawl_site</code> <code>map_site</code></footer>
 </div>
 
 <script>
@@ -377,6 +481,9 @@ const ICONS = {
   copy:       lsvg('<rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>'),
   download:   lsvg('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/>'),
   chevron:    lsvg('<path d="m6 9 6 6 6-6"/>'),
+  sparkles:   lsvg('<path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/>'),  // sparkles
+  pdf:        lsvg('<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/>'),  // file
+  page:       lsvg('<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/>'),
 };
 
 const hostOf = u => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return "page"; } };
@@ -472,13 +579,12 @@ function renderOutputPanels(el, data, host) {
 }
 
 // tabs
+const TAB_NAMES = ["search", "fetch", "crawl", "map", "history"];
 document.querySelectorAll(".tab").forEach(t => t.onclick = () => {
   document.querySelectorAll(".tab").forEach(x => x.classList.remove("active"));
   t.classList.add("active");
   const tab = t.dataset.tab;
-  $("#panel-search").hidden = tab !== "search";
-  $("#panel-fetch").hidden = tab !== "fetch";
-  $("#panel-history").hidden = tab !== "history";
+  TAB_NAMES.forEach(n => { $("#panel-" + n).hidden = tab !== n; });
   if (tab === "history") loadHistory();
 });
 
@@ -567,6 +673,22 @@ function getTimeRange() {
   return document.querySelector(".time-pill.active")?.dataset.val || null;
 }
 
+// single-select pill groups (answer mode, sitemap mode)
+function pillGroup(selector) {
+  document.querySelectorAll(selector).forEach(p => p.onclick = () => {
+    document.querySelectorAll(selector).forEach(x => x.classList.remove("active"));
+    p.classList.add("active");
+  });
+  return () => document.querySelector(selector + ".active")?.dataset.val || "";
+}
+const getAnswerMode = pillGroup(".answer-pill");
+const getSitemapMode = pillGroup(".sitemap-pill");
+
+const csvList = id => {
+  const v = $(id).value.trim();
+  return v ? v.split(",").map(s => s.trim()).filter(Boolean) : null;
+};
+
 // show scrape-format choices only when scraping is on
 $("#fetchContent").addEventListener("change", () => {
   $("#scrapeFormats").style.display = $("#fetchContent").checked ? "flex" : "none";
@@ -580,8 +702,21 @@ const cardOutputs = x => ({
   links: x.links, json: x.json, screenshot: x.screenshot,
 });
 
+function answerCardHtml(d) {
+  if (d.answer) {
+    return `<div class="card" style="border-color:var(--amber-dim)">
+      <span class="badge"><span style="display:inline-flex;vertical-align:-2px">${ICONS.sparkles}</span> answer${d.answer_model?` · ${esc(d.answer_model)}`:""}</span>
+      <div class="md" style="margin-top:12px">${mdToHtml(d.answer)}</div></div>`;
+  }
+  if (d.answer_error) {
+    return `<div class="card"><div class="meta"><span class="err">answer unavailable: ${esc(String(d.answer_error))}</span></div></div>`;
+  }
+  return "";
+}
+
 function renderSearchCards(d) {
-  $("#searchResults").innerHTML = d.results.map((x,i) => {
+  const answer = answerCardHtml(d);
+  $("#searchResults").innerHTML = answer + d.results.map((x,i) => {
     const parts = [];
     const outs = cardOutputs(x);
     const fmts = Object.keys(outs).filter(k => outs[k] != null && (k !== "links" || outs[k].length));
@@ -635,15 +770,19 @@ $("#searchForm").onsubmit = async e => {
   const enrich = $("#fetchContent").checked;
   const steps = makeStepLog($("#searchStatus"));
   try {
+    const answerMode = getAnswerMode();
     const body = { query: q, max_results: +$("#max").value, fetch_content: enrich,
-                   fetch_top: +$("#fetchTop").value, time_range: getTimeRange() };
+                   fetch_top: +$("#fetchTop").value, time_range: getTimeRange(),
+                   include_domains: csvList("#includeDomains"),
+                   exclude_domains: csvList("#excludeDomains"),
+                   include_answer: answerMode || false };
     if (enrich) {
       const sfmts = [...document.querySelectorAll(".sfmt:checked")].map(c => c.value);
       body.fetch_formats = sfmts.length ? sfmts : ["markdown"];
     }
     const d = await streamPost("/search/stream", body, ev => steps.add(ev));
     const tr = getTimeRange();
-    steps.done(`${d.result_count} result${d.result_count===1?"":"s"} for “${esc(q)}”${tr?` · past ${tr}`:""}`);
+    steps.done(`${d.result_count} result${d.result_count===1?"":"s"} for “${esc(q)}”${tr?` · past ${tr}`:""}${d.answer?" · answer ✓":""}`);
     lastSearchData = d;
     $("#viewToggle").style.display = "flex";
     document.querySelectorAll(".view-pill").forEach(x => x.classList.toggle("active", x.dataset.view === "cards"));
@@ -653,40 +792,157 @@ $("#searchForm").onsubmit = async e => {
   } finally { btn.disabled = false; }
 };
 
-// fetch
+// per-page result cards, reused by batch fetch and crawl (each `page` is a
+// fetch-shaped object; renderOutputPanels handles its formats).
+function renderPageCards(container, pages, failed) {
+  const cardHtml = (p, i) => {
+    const outs = { markdown: p.markdown, html: p.html, raw_html: p.raw_html,
+                   links: p.links, json: p.json, screenshot: p.screenshot };
+    const fmts = Object.keys(outs).filter(k => outs[k] != null && (k !== "links" || outs[k].length));
+    const badges = [];
+    if (p.is_pdf) badges.push(`<span class="badge">pdf · ${p.page_count} pages</span>`);
+    if (p.status_code) badges.push(`<span class="badge">HTTP ${p.status_code}</span>`);
+    const collapse = fmts.length ? `<div class="ocollapse" data-i="${i}">
+      <div class="ocollapse-head">${ICONS.page}<span>content · ${fmts.map(esc).join(", ")}</span><span class="chev">${ICONS.chevron}</span></div>
+      <div class="ocollapse-body"></div></div>` : "";
+    const notes = [];
+    if (p.pdf_note) notes.push(`<span style="color:var(--amber)">${esc(String(p.pdf_note))}</span>`);
+    if (p.screenshot_error) notes.push(`<span class="err">screenshot failed: ${esc(String(p.screenshot_error))}</span>`);
+    if (p.truncated) notes.push(`truncated @ ${p.truncated_at}`);
+    return `<div class="card" data-i="${i}" style="animation-delay:${i*30}ms">
+      <a class="title" href="${esc(p.url)}" target="_blank" rel="noopener">${esc(p.title)||"(untitled)"}</a> ${badges.join(" ")}
+      <div class="url">${esc(p.url)}</div>
+      ${notes.length?`<div class="meta">${notes.join(" · ")}</div>`:""}
+      ${collapse}</div>`;
+  };
+  const failHtml = (f, i) => `<div class="card" style="border-color:var(--red)">
+      <div class="url">${esc(f.url)}</div>
+      <div class="meta"><span class="err">fetch failed: ${esc(String(f.error))}</span></div></div>`;
+  container.innerHTML = pages.map(cardHtml).join("") + (failed||[]).map(failHtml).join("");
+  container.querySelectorAll(".ocollapse").forEach(c => {
+    const p = pages[+c.dataset.i];
+    const body = c.querySelector(".ocollapse-body");
+    c.querySelector(".ocollapse-head").onclick = () => {
+      c.classList.toggle("open");
+      if (!body.dataset.rendered) {
+        renderOutputPanels(body, { markdown: p.markdown, html: p.html, raw_html: p.raw_html,
+          links: p.links, json: p.json, screenshot: p.screenshot }, hostOf(p.url));
+        body.dataset.rendered = "1";
+      }
+    };
+  });
+}
+
+// fetch (single url or batch)
 $("#fetchForm").onsubmit = async e => {
   e.preventDefault();
-  const url = $("#url").value.trim(); if (!url) return;
+  const batchUrls = $("#urlList").value.split("\n").map(s => s.trim()).filter(Boolean);
+  const url = $("#url").value.trim();
+  if (!batchUrls.length && !url) return;
   const btn = e.target.querySelector("button"); btn.disabled = true;
   $("#fetchResult").innerHTML = "";
   const stealth = $("#stealth").checked;
   const formats = [...document.querySelectorAll(".fmt:checked")].map(c => c.value);
   const waitFor = +$("#waitFor").value || 0;
   const location = $("#location").value.trim() || null;
-  const includeTags = $("#includeTags").value.trim() ? $("#includeTags").value.split(",").map(s=>s.trim()).filter(Boolean) : null;
-  const excludeTags = $("#excludeTags").value.trim() ? $("#excludeTags").value.split(",").map(s=>s.trim()).filter(Boolean) : null;
+  const includeTags = csvList("#includeTags");
+  const excludeTags = csvList("#excludeTags");
   const steps = makeStepLog($("#fetchStatus"));
   try {
-    const body = { url, formats, only_main_content: $("#mainOnly").checked, stealth };
+    const body = { formats, only_main_content: $("#mainOnly").checked, stealth };
+    if (batchUrls.length) body.urls = batchUrls.slice(0, 20); else body.url = url;
     if (waitFor) body.wait_for = waitFor;
     if (location) body.location = location;
     if (includeTags) body.include_tags = includeTags;
     if (excludeTags) body.exclude_tags = excludeTags;
     const d = await streamPost("/fetch/stream", body, ev => steps.add(ev));
-    const mdLen = (d.markdown||"").length;
-    const fmtList = (d.formats||["markdown"]).join(", ");
-    steps.done(`HTTP ${d.status_code ?? "?"} · formats: ${esc(fmtList)}${mdLen?` · ${mdLen.toLocaleString()} chars markdown`:''}${d.truncated?` (truncated @ ${d.truncated_at})`:''}${d.screenshot_note?` · <span style="color:var(--amber)">${esc(String(d.screenshot_note))}</span>`:''}${d.screenshot_error?` · <span class="err">screenshot failed: ${esc(String(d.screenshot_error))}</span>`:''}`);
 
-    const bits = [];
-    if (stealth) bits.push('<span class="badge">stealth</span>');
-    bits.push(`<span class="badge">fmt: ${esc(fmtList)}</span>`);
-    if (location) bits.push(`<span class="badge">geo: ${esc(location)}</span>`);
-    $("#fetchResult").innerHTML = `<div class="head">
-        <div><h2>${esc(d.title)||"(untitled)"}</h2><div class="u">${esc(d.url)}</div></div>
-        ${bits.join("")}</div>
-      ${d.description?`<p class="snippet" style="margin:0 0 14px;color:var(--muted)">${esc(d.description)}</p>`:""}
-      <div id="fetchPanels"></div>`;
-    renderOutputPanels($("#fetchPanels"), d, hostOf(d.url));
+    if (d.results) {  // batch
+      steps.done(`${d.result_count} fetched · ${d.failed_count} failed`);
+      $("#fetchResult").innerHTML = `<div class="head"><div><h2>batch fetch</h2>
+        <div class="u">${d.result_count} of ${d.result_count + d.failed_count} succeeded</div></div>
+        <span class="badge">fmt: ${esc(formats.join(", "))}</span></div>
+        <div class="results" id="batchResults"></div>`;
+      renderPageCards($("#batchResults"), d.results, d.failed_results);
+    } else {  // single
+      const mdLen = (d.markdown||"").length;
+      const fmtList = (d.formats||["markdown"]).join(", ");
+      steps.done(`HTTP ${d.status_code ?? "?"} · formats: ${esc(fmtList)}${d.is_pdf?` · pdf ${d.page_count} pages`:''}${mdLen?` · ${mdLen.toLocaleString()} chars markdown`:''}${d.truncated?` (truncated @ ${d.truncated_at})`:''}${d.pdf_note?` · <span style="color:var(--amber)">${esc(String(d.pdf_note))}</span>`:''}${d.screenshot_note?` · <span style="color:var(--amber)">${esc(String(d.screenshot_note))}</span>`:''}${d.screenshot_error?` · <span class="err">screenshot failed: ${esc(String(d.screenshot_error))}</span>`:''}`);
+      const bits = [];
+      if (d.is_pdf) bits.push(`<span class="badge">pdf · ${d.page_count} pages</span>`);
+      if (stealth) bits.push('<span class="badge">stealth</span>');
+      bits.push(`<span class="badge">fmt: ${esc(fmtList)}</span>`);
+      if (location) bits.push(`<span class="badge">geo: ${esc(location)}</span>`);
+      $("#fetchResult").innerHTML = `<div class="head">
+          <div><h2>${esc(d.title)||"(untitled)"}</h2><div class="u">${esc(d.url)}</div></div>
+          ${bits.join("")}</div>
+        ${d.description?`<p class="snippet" style="margin:0 0 14px;color:var(--muted)">${esc(d.description)}</p>`:""}
+        <div id="fetchPanels"></div>`;
+      renderOutputPanels($("#fetchPanels"), d, hostOf(d.url));
+    }
+  } catch (err) {
+    steps.fail(`error: ${esc(String(err.message||err))}`);
+  } finally { btn.disabled = false; }
+};
+
+// crawl
+$("#crawlForm").onsubmit = async e => {
+  e.preventDefault();
+  const url = $("#crawlUrl").value.trim(); if (!url) return;
+  const btn = e.target.querySelector("button"); btn.disabled = true;
+  $("#crawlResults").innerHTML = "";
+  const formats = [...document.querySelectorAll(".cfmt:checked")].map(c => c.value);
+  const steps = makeStepLog($("#crawlStatus"));
+  try {
+    const body = {
+      url,
+      limit: +$("#crawlLimit").value || 25,
+      timeout_s: +$("#crawlTimeout").value || 300,
+      formats: formats.length ? formats : ["markdown"],
+      crawl_entire_domain: $("#crawlEntireDomain").checked,
+      allow_subdomains: $("#crawlSubdomains").checked,
+      include_paths: csvList("#crawlInclude"),
+      exclude_paths: csvList("#crawlExclude"),
+    };
+    const depth = $("#crawlDepth").value.trim();
+    if (depth !== "") body.max_depth = +depth;
+    const d = await streamPost("/crawl/stream", body, ev => steps.add(ev));
+    const warn = d.partial ? ` <span style="color:var(--amber)">(${esc(d.status)}${d.error?`: ${esc(String(d.error))}`:""})</span>` : "";
+    steps.done(`${d.status} · ${d.page_count}${d.total?`/${d.total}`:""} pages${warn}`);
+    const head = `<div class="head"><div><h2>crawl of ${esc(hostOf(d.url))}</h2>
+      <div class="u">${esc(d.url)}</div></div>
+      <span class="badge${d.partial?'" style="color:var(--amber);border-color:var(--amber-dim)':''}">${esc(d.status)} · ${d.page_count} pages</span></div>`;
+    $("#crawlResults").innerHTML = head + `<div class="results" id="crawlPages"></div>`;
+    renderPageCards($("#crawlPages"), d.pages, []);
+  } catch (err) {
+    steps.fail(`error: ${esc(String(err.message||err))}`);
+  } finally { btn.disabled = false; }
+};
+
+// map
+$("#mapForm").onsubmit = async e => {
+  e.preventDefault();
+  const url = $("#mapUrl").value.trim(); if (!url) return;
+  const btn = e.target.querySelector("button"); btn.disabled = true;
+  $("#mapResults").innerHTML = "";
+  const steps = makeStepLog($("#mapStatus"));
+  try {
+    const body = {
+      url,
+      limit: +$("#mapLimit").value || 100,
+      include_subdomains: $("#mapSubdomains").checked,
+      sitemap: getSitemapMode() || "include",
+    };
+    const search = $("#mapSearch").value.trim();
+    if (search) body.search = search;
+    const d = await streamPost("/map/stream", body, ev => steps.add(ev));
+    steps.done(`${d.link_count} link${d.link_count===1?"":"s"} discovered`);
+    const urls = d.links.map(l => l.url);
+    $("#mapResults").innerHTML = `<div class="card">
+      <div class="head" style="margin-bottom:8px"><div><h2>${esc(hostOf(d.url))}</h2>
+        <div class="u">${d.link_count} links</div></div></div>
+      <div id="mapPanels"></div></div>`;
+    renderOutputPanels($("#mapPanels"), { links: urls }, hostOf(d.url));
   } catch (err) {
     steps.fail(`error: ${esc(String(err.message||err))}`);
   } finally { btn.disabled = false; }
@@ -712,13 +968,19 @@ async function loadHistory() {
       if (r.kind === "search" && s.result_count != null) bits.push(`${s.result_count} results`);
       if (s.scraped) bits.push(`${s.scraped} scraped`);
       if (s.screenshots) bits.push(`${s.screenshots} shots`);
-      if (r.kind === "fetch" && s.markdown_chars) bits.push(`${(+s.markdown_chars).toLocaleString()} chars`);
-      if (r.kind === "fetch" && s.screenshot) bits.push("screenshot");
+      if (r.kind === "search" && s.answer) bits.push("answer");
+      if (r.kind === "fetch" && s.batch) bits.push(`${s.succeeded}/${s.requested} fetched`);
+      if (r.kind === "fetch" && !s.batch && s.markdown_chars) bits.push(`${(+s.markdown_chars).toLocaleString()} chars`);
+      if (r.kind === "fetch" && s.pdf_pages) bits.push(`pdf · ${s.pdf_pages} pages`);
+      if (r.kind === "fetch" && !s.batch && s.screenshot) bits.push("screenshot");
+      if (r.kind === "crawl") bits.push(`${s.page_count}${s.total?`/${s.total}`:""} pages${s.status && s.status!=="completed"?` · ${s.status}`:""}`);
+      if (r.kind === "map" && s.link_count != null) bits.push(`${s.link_count} links`);
       return `<div class="card hrun" data-id="${r.id}">
         <div class="hrow">
           <span class="hkind">${esc(r.kind)}</span>
           <span class="hlabel">${esc(r.label||"")}</span>
           <span class="hmeta ${r.status==="ok"?"hok":"herr"}">${r.status==="ok"?"ok":"error"}</span>
+          ${bits.length?`<span class="hmeta">${esc(bits.join(" · "))}</span>`:""}
           <span class="hmeta">${(r.duration_ms/1000).toFixed(1)}s · ${fmtWhen(r.started_at)}</span>
           <button class="hdel" title="delete run">${X_SVG}</button>
         </div>
