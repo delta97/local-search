@@ -21,6 +21,10 @@ A fully self-hosted web search + page fetching pipeline for LLMs.
 - **Gateway** — a small FastAPI service exposing the two LLM-friendly endpoints.
 - **MCP server** — stdio MCP server (`mcp-server/`) exposing `web_search` and `fetch_page` tools.
 
+## Documentation
+
+Full API reference, configuration options, and architecture notes: [`docs/index.html`](docs/index.html) — open in any browser.
+
 ## Start / stop
 
 ```bash
@@ -30,6 +34,10 @@ docker compose logs -f api   # watch firecrawl logs
 ```
 
 Health check: `curl http://localhost:8088/healthz`
+
+## Web console
+
+Open **http://localhost:8088** in a browser for an interactive search and page-fetch console. The header shows live health status for all upstream services.
 
 ## HTTP API (for any LLM tool-calling setup)
 

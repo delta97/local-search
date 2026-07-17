@@ -7,6 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Fraunces:opsz,wght@9..144,500;9..144,600&display=swap" rel="stylesheet" />
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
 <style>
   :root {
     --bg: #0e1512;
@@ -133,6 +134,12 @@
   .badge { font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--amber); border: 1px solid var(--amber-dim); border-radius: 20px; padding: 3px 10px; }
   footer { margin-top: 40px; color: var(--muted); font-size: 11.5px; text-align: center; letter-spacing: .04em; }
   footer code { color: var(--green); }
+
+  /* Lucide icon sizing */
+  .icon { width: 13px; height: 13px; display: inline-block; vertical-align: -2px; flex-shrink: 0; }
+  .tab .icon { width: 12px; height: 12px; vertical-align: -1px; }
+  @keyframes spin-anim { to { transform: rotate(360deg); } }
+  .icon-spin { animation: spin-anim 0.85s linear infinite; }
 </style>
 </head>
 <body>
@@ -149,8 +156,8 @@
   </header>
 
   <div class="tabs">
-    <button class="tab active" data-tab="search">▸ Search</button>
-    <button class="tab" data-tab="fetch">▸ Fetch page</button>
+    <button class="tab active" data-tab="search"><i data-lucide="search" class="icon"></i> Search</button>
+    <button class="tab" data-tab="fetch"><i data-lucide="globe" class="icon"></i> Fetch page</button>
   </div>
 
   <!-- SEARCH -->
@@ -210,6 +217,8 @@
 const $ = s => document.querySelector(s);
 const esc = s => (s ?? "").replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
+const SPIN_SVG = `<svg class="icon icon-spin" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>`;
+
 // tabs
 document.querySelectorAll(".tab").forEach(t => t.onclick = () => {
   document.querySelectorAll(".tab").forEach(x => x.classList.remove("active"));
@@ -253,7 +262,7 @@ $("#searchForm").onsubmit = async e => {
   const btn = e.target.querySelector("button"); btn.disabled = true;
   $("#searchResults").innerHTML = "";
   const enrich = $("#fetchContent").checked;
-  $("#searchStatus").innerHTML = `<span class="spin">▸ querying searxng${enrich ? " + scraping top results" : ""}…</span>`;
+  $("#searchStatus").innerHTML = `<span class="spin">${SPIN_SVG} querying searxng${enrich ? " + scraping top results" : ""}…</span>`;
   try {
     const body = { query: q, max_results: +$("#max").value, fetch_content: enrich,
                    fetch_top: +$("#fetchTop").value, time_range: $("#time").value || null };
@@ -285,7 +294,7 @@ $("#fetchForm").onsubmit = async e => {
   const btn = e.target.querySelector("button"); btn.disabled = true;
   $("#fetchResult").innerHTML = "";
   const stealth = $("#stealth").checked;
-  $("#fetchStatus").innerHTML = `<span class="spin">▸ fetching via firecrawl${stealth?" + camoufox stealth (slower)":""}…</span>`;
+  $("#fetchStatus").innerHTML = `<span class="spin">${SPIN_SVG} fetching via firecrawl${stealth?" + camoufox stealth (slower)":""}…</span>`;
   try {
     const body = { url, only_main_content: $("#mainOnly").checked, stealth };
     const r = await fetch("/fetch", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) });
@@ -301,6 +310,8 @@ $("#fetchForm").onsubmit = async e => {
     $("#fetchStatus").innerHTML = `<span class="err">error: ${esc(String(err.message||err))}</span>`;
   } finally { btn.disabled = false; }
 };
+
+lucide.createIcons();
 </script>
 </body>
 </html>

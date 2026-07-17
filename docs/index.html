@@ -1,0 +1,670 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>local-search — documentation</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Fraunces:opsz,wght@9..144,500;9..144,600&display=swap" rel="stylesheet" />
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<style>
+  :root {
+    --bg: #0e1512;
+    --panel: #141d19;
+    --panel-2: #18231e;
+    --ink: #e8f0ea;
+    --muted: #7f948a;
+    --line: #263630;
+    --amber: #f5b843;
+    --amber-dim: #b9862a;
+    --green: #56d99a;
+    --red: #e8705a;
+    --nav-w: 240px;
+    --shadow: 0 24px 60px -20px rgba(0,0,0,.7);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Space Mono", ui-monospace, monospace;
+    min-height: 100vh;
+    line-height: 1.65;
+    display: flex;
+  }
+  body::before {
+    content: "";
+    position: fixed; inset: 0; pointer-events: none; z-index: 0;
+    background-image: repeating-linear-gradient(0deg, rgba(255,255,255,.012) 0 1px, transparent 1px 3px);
+  }
+
+  /* ── Sidebar nav ── */
+  nav {
+    position: fixed; top: 0; left: 0; bottom: 0;
+    width: var(--nav-w);
+    background: var(--panel);
+    border-right: 1px solid var(--line);
+    padding: 28px 0 40px;
+    overflow-y: auto;
+    z-index: 10;
+    display: flex; flex-direction: column; gap: 0;
+  }
+  .nav-brand {
+    padding: 0 20px 24px;
+    border-bottom: 1px solid var(--line);
+    margin-bottom: 12px;
+  }
+  .nav-brand h1 {
+    font-family: "Fraunces", serif; font-weight: 600; font-size: 20px;
+    letter-spacing: -.3px; color: var(--ink);
+  }
+  .nav-brand h1 em { font-style: italic; color: var(--amber); }
+  .nav-brand .sub { font-size: 10.5px; color: var(--muted); letter-spacing: .04em; margin-top: 4px; }
+  .nav-section { font-size: 9.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); padding: 16px 20px 6px; }
+  nav a {
+    display: flex; align-items: center; gap: 9px;
+    font-size: 12.5px; color: var(--muted); text-decoration: none;
+    padding: 8px 20px; transition: color .15s, background .15s;
+    border-left: 2px solid transparent;
+  }
+  nav a .icon { width: 14px; height: 14px; flex-shrink: 0; }
+  nav a:hover { color: var(--ink); background: var(--panel-2); }
+  nav a.active { color: var(--amber); border-left-color: var(--amber); background: var(--panel-2); }
+  .nav-status {
+    margin-top: auto; padding: 20px 20px 0; border-top: 1px solid var(--line);
+    font-size: 11px; color: var(--muted);
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green);
+    box-shadow: 0 0 8px var(--green); display: inline-block; animation: pulse 2.4s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+  /* ── Main content ── */
+  main {
+    margin-left: var(--nav-w);
+    flex: 1;
+    position: relative; z-index: 1;
+    max-width: 860px;
+    padding: 56px 52px 100px;
+  }
+
+  section { margin-bottom: 72px; scroll-margin-top: 24px; }
+  .section-header {
+    display: flex; align-items: center; gap: 12px;
+    border-bottom: 1px solid var(--line); padding-bottom: 14px; margin-bottom: 28px;
+  }
+  .section-header .icon { width: 18px; height: 18px; color: var(--amber); flex-shrink: 0; }
+  h2 { font-family: "Fraunces", serif; font-weight: 600; font-size: 26px; letter-spacing: -.3px; }
+  h3 { font-family: "Fraunces", serif; font-weight: 600; font-size: 18px; margin: 32px 0 12px; color: var(--ink); }
+  h4 { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--amber-dim); margin: 22px 0 8px; }
+  p { color: #c4d4cc; font-size: 13.5px; margin-bottom: 14px; }
+  p:last-child { margin-bottom: 0; }
+  a { color: var(--amber); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  strong { color: var(--ink); font-weight: 700; }
+
+  /* ── Code ── */
+  pre {
+    background: #0b100d; border: 1px solid var(--line); border-radius: 10px;
+    padding: 18px 20px; overflow-x: auto; margin: 14px 0;
+    font-size: 12.5px; line-height: 1.6; color: #a8c4b8;
+  }
+  code {
+    font-family: "Space Mono", monospace; font-size: 12px;
+    background: #0d1510; border: 1px solid var(--line);
+    padding: 2px 7px; border-radius: 4px; color: var(--green);
+  }
+  pre code { background: none; border: none; padding: 0; font-size: inherit; color: inherit; }
+  .comment { color: #4d665d; }
+  .kw { color: var(--amber-dim); }
+  .str { color: var(--green); }
+  .num { color: #a8d4f5; }
+
+  /* ── Tables ── */
+  .table-wrap { overflow-x: auto; margin: 14px 0; border-radius: 10px; border: 1px solid var(--line); }
+  table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+  th {
+    background: var(--panel-2); text-align: left; font-size: 10px; letter-spacing: .09em;
+    text-transform: uppercase; color: var(--muted); padding: 10px 14px;
+    border-bottom: 1px solid var(--line);
+  }
+  td { padding: 10px 14px; border-bottom: 1px solid #1a2720; vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  td code { font-size: 11.5px; }
+  .req { color: var(--amber); font-size: 10px; letter-spacing: .06em; text-transform: uppercase; }
+  .opt-label { color: var(--muted); font-size: 10px; letter-spacing: .06em; text-transform: uppercase; }
+
+  /* ── Method badges ── */
+  .endpoint {
+    display: flex; align-items: center; gap: 12px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 14px 18px; margin: 20px 0 16px; flex-wrap: wrap; gap: 10px;
+  }
+  .method {
+    font-size: 11px; font-weight: 700; letter-spacing: .08em;
+    padding: 4px 10px; border-radius: 6px; flex-shrink: 0;
+  }
+  .get { background: #1a3a28; color: var(--green); }
+  .post { background: #2e2310; color: var(--amber); }
+  .path { font-size: 14px; color: var(--ink); font-weight: 700; }
+  .endpoint-desc { font-size: 12px; color: var(--muted); }
+
+  /* ── Cards ── */
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 18px 20px; margin: 14px 0;
+  }
+  .card h4 { margin: 0 0 8px; }
+  .card p { font-size: 12.5px; margin-bottom: 0; }
+
+  /* ── Component grid ── */
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; margin: 20px 0; }
+  .comp-card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px;
+  }
+  .comp-card .comp-name { font-size: 13px; font-weight: 700; color: var(--ink); display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .comp-card .comp-name .icon { width: 14px; height: 14px; color: var(--amber); }
+  .comp-card .comp-port { font-size: 11px; color: var(--green); margin-bottom: 8px; }
+  .comp-card p { font-size: 12px; color: var(--muted); }
+
+  /* ── Architecture flow ── */
+  .arch {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 24px; margin: 20px 0; overflow-x: auto;
+  }
+  .arch pre { background: none; border: none; padding: 0; margin: 0; color: #7f9e94; font-size: 12px; }
+
+  /* ── Callout ── */
+  .callout {
+    border-left: 3px solid var(--amber-dim);
+    background: #1a1a0d; border-radius: 0 8px 8px 0;
+    padding: 12px 16px; margin: 16px 0; font-size: 12.5px; color: #b9c7a0;
+  }
+  .callout strong { color: var(--amber); }
+
+  /* ── Responsive ── */
+  @media (max-width: 700px) {
+    nav { width: 100%; position: relative; height: auto; border-right: none; border-bottom: 1px solid var(--line); }
+    body { flex-direction: column; }
+    main { margin-left: 0; padding: 28px 20px 60px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ── Sidebar nav ── -->
+<nav>
+  <div class="nav-brand">
+    <h1>local·<em>search</em></h1>
+    <div class="sub">self-hosted search pipeline</div>
+  </div>
+
+  <span class="nav-section">Getting started</span>
+  <a href="#overview"><i data-lucide="layout-dashboard" class="icon"></i> Overview</a>
+  <a href="#quickstart"><i data-lucide="zap" class="icon"></i> Quick start</a>
+  <a href="#console"><i data-lucide="monitor" class="icon"></i> Web console</a>
+
+  <span class="nav-section">API reference</span>
+  <a href="#http-api"><i data-lucide="code-2" class="icon"></i> HTTP API</a>
+  <a href="#mcp"><i data-lucide="cpu" class="icon"></i> MCP server</a>
+  <a href="#direct"><i data-lucide="link" class="icon"></i> Direct access</a>
+
+  <span class="nav-section">Operations</span>
+  <a href="#config"><i data-lucide="settings" class="icon"></i> Configuration</a>
+  <a href="#architecture"><i data-lucide="box" class="icon"></i> Architecture</a>
+
+  <div class="nav-status">
+    <span class="dot"></span> gateway <a href="http://localhost:8088" target="_blank" rel="noopener">:8088</a>
+  </div>
+</nav>
+
+<!-- ── Main ── -->
+<main>
+
+  <!-- Overview -->
+  <section id="overview">
+    <div class="section-header">
+      <i data-lucide="layout-dashboard" class="icon"></i>
+      <h2>Overview</h2>
+    </div>
+    <p>
+      <strong>local-search</strong> is a fully self-hosted web search and page-fetching pipeline
+      designed for LLMs and AI agents. It wires together a metasearch engine, a headless browser
+      scraper, and an anti-detect Firefox into a single Docker Compose stack, then exposes the
+      whole thing via a clean HTTP gateway API and an MCP server.
+    </p>
+    <p>No API keys required. No rate limits. No data leaving your machine.</p>
+
+    <div class="grid">
+      <div class="comp-card">
+        <div class="comp-name"><i data-lucide="search" class="icon"></i> SearXNG</div>
+        <div class="comp-port">localhost:8888</div>
+        <p>Self-hosted metasearch engine aggregating Google, Bing, DuckDuckGo, and dozens more. JSON API enabled.</p>
+      </div>
+      <div class="comp-card">
+        <div class="comp-name"><i data-lucide="flame" class="icon"></i> Firecrawl</div>
+        <div class="comp-port">localhost:3002</div>
+        <p>Self-hosted scraping engine. Fetches pages and returns clean markdown. No auth required on self-hosted.</p>
+      </div>
+      <div class="comp-card">
+        <div class="comp-name"><i data-lucide="shield" class="icon"></i> Camoufox</div>
+        <div class="comp-port">internal :3000</div>
+        <p>Anti-detect Firefox running Xvfb-backed virtual headless. Wired in as Firecrawl's default browser engine.</p>
+      </div>
+      <div class="comp-card">
+        <div class="comp-name"><i data-lucide="arrow-right-left" class="icon"></i> Gateway</div>
+        <div class="comp-port">localhost:8088</div>
+        <p>FastAPI service exposing <code>/search</code> and <code>/fetch</code> — the two endpoints LLMs actually call.</p>
+      </div>
+      <div class="comp-card">
+        <div class="comp-name"><i data-lucide="cpu" class="icon"></i> MCP server</div>
+        <div class="comp-port">stdio</div>
+        <p>Node.js stdio MCP server wrapping the gateway into <code>web_search</code> and <code>fetch_page</code> tools.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Quick start -->
+  <section id="quickstart">
+    <div class="section-header">
+      <i data-lucide="zap" class="icon"></i>
+      <h2>Quick start</h2>
+    </div>
+
+    <h3>Prerequisites</h3>
+    <p>Docker and Docker Compose (v2). Node.js 18+ (for the MCP server only).</p>
+
+    <h3>Start the stack</h3>
+    <pre><span class="comment"># First run pulls ~4 GB of images (firecrawl, playwright-service, searxng, …)</span>
+docker compose up -d
+
+<span class="comment"># Verify everything is healthy</span>
+curl http://localhost:8088/healthz
+<span class="comment"># → {"gateway":"ok","searxng":"ok","firecrawl":"ok"}</span></pre>
+
+    <h3>Run a search</h3>
+    <pre>curl <span class="str">'http://localhost:8088/search?q=rust+async+runtime&amp;max_results=5'</span></pre>
+
+    <h3>Fetch a page as markdown</h3>
+    <pre>curl -X POST http://localhost:8088/fetch \
+  -H <span class="str">'Content-Type: application/json'</span> \
+  -d <span class="str">'{"url": "https://example.com"}'</span></pre>
+
+    <h3>Register the MCP server with Claude Code</h3>
+    <pre>claude mcp add local-search -- node /path/to/local-search/mcp-server/index.js</pre>
+
+    <h3>Stop</h3>
+    <pre>docker compose down</pre>
+  </section>
+
+  <!-- Web console -->
+  <section id="console">
+    <div class="section-header">
+      <i data-lucide="monitor" class="icon"></i>
+      <h2>Web console</h2>
+    </div>
+    <p>
+      The gateway ships a built-in web console at
+      <a href="http://localhost:8088" target="_blank" rel="noopener">http://localhost:8088</a>.
+      Open it in a browser to search and fetch pages interactively without writing any curl commands.
+    </p>
+    <div class="grid">
+      <div class="comp-card">
+        <div class="comp-name"><i data-lucide="search" class="icon"></i> Search tab</div>
+        <p>Full-text search with optional time range filter, result count control, and one-click scrape of top results into markdown.</p>
+      </div>
+      <div class="comp-card">
+        <div class="comp-name"><i data-lucide="globe" class="icon"></i> Fetch tab</div>
+        <p>Paste any URL and get its content as rendered markdown. Toggle stealth mode to route through the Camoufox anti-detect browser.</p>
+      </div>
+    </div>
+    <p>The header shows a live health status for the gateway, SearXNG, and Firecrawl.</p>
+  </section>
+
+  <!-- HTTP API -->
+  <section id="http-api">
+    <div class="section-header">
+      <i data-lucide="code-2" class="icon"></i>
+      <h2>HTTP API</h2>
+    </div>
+    <p>
+      All endpoints are served by the FastAPI gateway at <code>http://localhost:8088</code>.
+      POST endpoints accept JSON bodies; the GET <code>/search</code> variant accepts query parameters.
+    </p>
+
+    <!-- healthz -->
+    <h3>Health check</h3>
+    <div class="endpoint">
+      <span class="method get">GET</span>
+      <span class="path">/healthz</span>
+      <span class="endpoint-desc">Liveness check and upstream reachability</span>
+    </div>
+    <p>Returns status for each upstream service. Use this to confirm the stack is fully running.</p>
+    <pre><span class="comment"># Response</span>
+{
+  <span class="str">"gateway"</span>: <span class="str">"ok"</span>,
+  <span class="str">"searxng"</span>: <span class="str">"ok"</span>,
+  <span class="str">"firecrawl"</span>: <span class="str">"ok"</span>
+}</pre>
+
+    <!-- search -->
+    <h3>Search</h3>
+    <div class="endpoint">
+      <span class="method get">GET</span>
+      <span class="path">/search</span>
+      <span class="endpoint-desc">Query string params</span>
+    </div>
+    <div class="endpoint">
+      <span class="method post">POST</span>
+      <span class="path">/search</span>
+      <span class="endpoint-desc">JSON body</span>
+    </div>
+
+    <h4>Parameters</h4>
+    <div class="table-wrap">
+      <table>
+        <tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr>
+        <tr><td><code>query</code> / <code>q</code></td><td>string</td><td><span class="req">required</span></td><td>Search query</td></tr>
+        <tr><td><code>max_results</code></td><td>integer 1–30</td><td>8</td><td>Number of results to return</td></tr>
+        <tr><td><code>fetch_content</code></td><td>boolean</td><td>false</td><td>Scrape top results and include full page markdown</td></tr>
+        <tr><td><code>fetch_top</code></td><td>integer 1–10</td><td>3</td><td>How many top results to scrape (when <code>fetch_content</code> is true)</td></tr>
+        <tr><td><code>categories</code></td><td>string</td><td>"general"</td><td>SearXNG category: <code>general</code>, <code>news</code>, <code>it</code>, <code>science</code>, …</td></tr>
+        <tr><td><code>language</code></td><td>string</td><td>"en"</td><td>Language/locale code</td></tr>
+        <tr><td><code>time_range</code></td><td>string</td><td>null</td><td><code>day</code>, <code>week</code>, <code>month</code>, or <code>year</code></td></tr>
+      </table>
+    </div>
+
+    <h4>Examples</h4>
+    <pre><span class="comment"># Simple GET search</span>
+curl <span class="str">'http://localhost:8088/search?q=llm+context+window&amp;max_results=5'</span>
+
+<span class="comment"># POST: search + scrape top 3 results into markdown (one call)</span>
+curl -X POST http://localhost:8088/search \
+  -H <span class="str">'Content-Type: application/json'</span> \
+  -d <span class="str">'{
+    "query": "llm context window comparison",
+    "max_results": 8,
+    "fetch_content": true,
+    "fetch_top": 3,
+    "time_range": "month"
+  }'</span></pre>
+
+    <h4>Response shape</h4>
+    <pre>{
+  <span class="str">"query"</span>: <span class="str">"llm context window comparison"</span>,
+  <span class="str">"result_count"</span>: <span class="num">8</span>,
+  <span class="str">"results"</span>: [
+    {
+      <span class="str">"title"</span>: <span class="str">"..."</span>,
+      <span class="str">"url"</span>: <span class="str">"https://..."</span>,
+      <span class="str">"snippet"</span>: <span class="str">"..."</span>,
+      <span class="str">"engine"</span>: <span class="str">"google cse"</span>,
+      <span class="str">"score"</span>: <span class="num">1.0</span>,
+      <span class="str">"published_date"</span>: <span class="str">"..."</span>,
+      <span class="str">"content"</span>: <span class="str">"… full page markdown …"</span>  <span class="comment">// only when fetch_content=true</span>
+    }
+  ]
+}</pre>
+
+    <!-- fetch -->
+    <h3>Fetch page</h3>
+    <div class="endpoint">
+      <span class="method post">POST</span>
+      <span class="path">/fetch</span>
+      <span class="endpoint-desc">Fetch a single URL and return it as clean markdown</span>
+    </div>
+
+    <h4>Parameters</h4>
+    <div class="table-wrap">
+      <table>
+        <tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr>
+        <tr><td><code>url</code></td><td>string</td><td><span class="req">required</span></td><td>URL to fetch</td></tr>
+        <tr><td><code>only_main_content</code></td><td>boolean</td><td>true</td><td>Strip navigation, footers, and boilerplate</td></tr>
+        <tr><td><code>max_chars</code></td><td>integer</td><td>null</td><td>Truncate returned markdown to this many characters</td></tr>
+        <tr><td><code>stealth</code></td><td>boolean</td><td>false</td><td>Force rendering via Camoufox anti-detect browser (slower; use for bot-protected sites)</td></tr>
+      </table>
+    </div>
+
+    <h4>Examples</h4>
+    <pre><span class="comment"># Standard fetch</span>
+curl -X POST http://localhost:8088/fetch \
+  -H <span class="str">'Content-Type: application/json'</span> \
+  -d <span class="str">'{"url": "https://docs.example.com", "max_chars": 20000}'</span>
+
+<span class="comment"># Stealth mode for bot-protected sites (Cloudflare, etc)</span>
+curl -X POST http://localhost:8088/fetch \
+  -H <span class="str">'Content-Type: application/json'</span> \
+  -d <span class="str">'{"url": "https://protected-site.com", "stealth": true}'</span></pre>
+
+    <h4>Response shape</h4>
+    <pre>{
+  <span class="str">"url"</span>: <span class="str">"https://docs.example.com"</span>,
+  <span class="str">"title"</span>: <span class="str">"Example Docs"</span>,
+  <span class="str">"description"</span>: <span class="str">"…"</span>,
+  <span class="str">"markdown"</span>: <span class="str">"# Example Docs\n…"</span>,
+  <span class="str">"status_code"</span>: <span class="num">200</span>,
+  <span class="str">"truncated"</span>: <span class="kw">false</span>   <span class="comment">// present only when max_chars was hit</span>
+}</pre>
+
+    <div class="callout">
+      <strong>Note on stealth mode:</strong> even without <code>stealth: true</code>, Firecrawl
+      only escalates to a browser engine when its plain HTTP fetch isn't sufficient. Setting
+      <code>stealth: true</code> forces browser rendering (via Camoufox) every time, which is
+      slower but much harder to block.
+    </div>
+  </section>
+
+  <!-- MCP server -->
+  <section id="mcp">
+    <div class="section-header">
+      <i data-lucide="cpu" class="icon"></i>
+      <h2>MCP server</h2>
+    </div>
+    <p>
+      A Node.js stdio MCP server ships in <code>mcp-server/</code>. It wraps the gateway's
+      two endpoints into MCP tools that any MCP-compatible LLM client can call.
+    </p>
+
+    <h3>Register with Claude Code</h3>
+    <pre>claude mcp add local-search -- node /path/to/local-search/mcp-server/index.js</pre>
+
+    <h3>Generic MCP client config</h3>
+    <pre>{
+  <span class="str">"mcpServers"</span>: {
+    <span class="str">"local-search"</span>: {
+      <span class="str">"command"</span>: <span class="str">"node"</span>,
+      <span class="str">"args"</span>: [<span class="str">"/path/to/local-search/mcp-server/index.js"</span>],
+      <span class="str">"env"</span>: { <span class="str">"GATEWAY_URL"</span>: <span class="str">"http://localhost:8088"</span> }
+    }
+  }
+}</pre>
+
+    <h3>Tools</h3>
+
+    <div class="card">
+      <h4><i data-lucide="search" class="icon" style="color:var(--amber)"></i> web_search</h4>
+      <p>Search the web via SearXNG and return titles, URLs, and snippets.
+         Optionally scrape the top results into markdown in the same call.</p>
+      <div class="table-wrap" style="margin-top:12px">
+        <table>
+          <tr><th>Parameter</th><th>Type</th><th>Default</th><th>Description</th></tr>
+          <tr><td><code>query</code></td><td>string</td><td><span class="req">required</span></td><td>Search query</td></tr>
+          <tr><td><code>max_results</code></td><td>integer</td><td>8</td><td>Max results to return (1–30)</td></tr>
+          <tr><td><code>fetch_content</code></td><td>boolean</td><td>false</td><td>Scrape top results into markdown</td></tr>
+          <tr><td><code>fetch_top</code></td><td>integer</td><td>3</td><td>How many top results to scrape</td></tr>
+          <tr><td><code>time_range</code></td><td>enum</td><td>—</td><td><code>day</code> / <code>week</code> / <code>month</code> / <code>year</code></td></tr>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h4><i data-lucide="globe" class="icon" style="color:var(--amber)"></i> fetch_page</h4>
+      <p>Fetch a single URL via Firecrawl and return its content as clean markdown.</p>
+      <div class="table-wrap" style="margin-top:12px">
+        <table>
+          <tr><th>Parameter</th><th>Type</th><th>Default</th><th>Description</th></tr>
+          <tr><td><code>url</code></td><td>string</td><td><span class="req">required</span></td><td>URL to fetch</td></tr>
+          <tr><td><code>only_main_content</code></td><td>boolean</td><td>true</td><td>Strip nav/footer boilerplate</td></tr>
+          <tr><td><code>max_chars</code></td><td>integer</td><td>—</td><td>Truncate markdown to this many chars</td></tr>
+          <tr><td><code>stealth</code></td><td>boolean</td><td>false</td><td>Force Camoufox anti-detect browser</td></tr>
+        </table>
+      </div>
+    </div>
+
+    <h3>Environment</h3>
+    <div class="table-wrap">
+      <table>
+        <tr><th>Variable</th><th>Default</th><th>Description</th></tr>
+        <tr><td><code>GATEWAY_URL</code></td><td><code>http://localhost:8088</code></td><td>Gateway base URL</td></tr>
+      </table>
+    </div>
+  </section>
+
+  <!-- Direct access -->
+  <section id="direct">
+    <div class="section-header">
+      <i data-lucide="link" class="icon"></i>
+      <h2>Direct access</h2>
+    </div>
+    <p>Both upstream services are also reachable directly for debugging or advanced use.</p>
+
+    <h3>SearXNG</h3>
+    <p><a href="http://localhost:8888" target="_blank" rel="noopener">http://localhost:8888</a> — full web UI and JSON API.</p>
+    <pre><span class="comment"># JSON search</span>
+curl <span class="str">'http://localhost:8888/search?q=example&amp;format=json'</span></pre>
+
+    <h3>Firecrawl</h3>
+    <p><a href="http://localhost:3002" target="_blank" rel="noopener">http://localhost:3002</a> — raw Firecrawl API. Auth is disabled on self-hosted; pass any bearer token if a client requires one.</p>
+    <pre><span class="comment"># Direct scrape</span>
+curl -X POST http://localhost:3002/v2/scrape \
+  -H <span class="str">'Authorization: Bearer local'</span> \
+  -H <span class="str">'Content-Type: application/json'</span> \
+  -d <span class="str">'{"url": "https://example.com", "formats": ["markdown"]}'</span>
+
+<span class="comment"># Firecrawl's own search (uses SearXNG internally)</span>
+curl -X POST http://localhost:3002/v2/search \
+  -H <span class="str">'Authorization: Bearer local'</span> \
+  -H <span class="str">'Content-Type: application/json'</span> \
+  -d <span class="str">'{"query": "example query", "limit": 5}'</span></pre>
+  </section>
+
+  <!-- Configuration -->
+  <section id="config">
+    <div class="section-header">
+      <i data-lucide="settings" class="icon"></i>
+      <h2>Configuration</h2>
+    </div>
+
+    <h3>Browser engine</h3>
+    <p>
+      Camoufox is wired in as Firecrawl's default browser engine via
+      <code>PLAYWRIGHT_MICROSERVICE_URL</code>. To switch back to stock Playwright/Chromium:
+    </p>
+    <pre>PLAYWRIGHT_MICROSERVICE_URL=http://playwright-service:3000/scrape docker compose up -d api</pre>
+    <p>Or set it in a <code>.env</code> file at the repo root.</p>
+
+    <h3>Resource limits</h3>
+    <p>Default CPU/RAM limits per service in <code>docker-compose.yml</code>:</p>
+    <div class="table-wrap">
+      <table>
+        <tr><th>Service</th><th>CPUs</th><th>Memory</th></tr>
+        <tr><td><code>api</code> (Firecrawl)</td><td>4.0</td><td>4 GB</td></tr>
+        <tr><td><code>camoufox</code></td><td>2.0</td><td>2 GB</td></tr>
+        <tr><td><code>playwright-service</code></td><td>2.0</td><td>2 GB</td></tr>
+      </table>
+    </div>
+    <p>Raise <code>cpus</code> and <code>mem_limit</code> in <code>docker-compose.yml</code> for heavier crawling workloads.</p>
+
+    <h3>SearXNG engines</h3>
+    <p>
+      Active search engines are configured in <code>searxng/settings.yml</code>.
+      By default the standard engine set is active. See the
+      <a href="https://docs.searxng.org/admin/settings/settings_engines.html" target="_blank" rel="noopener">SearXNG docs</a>
+      for the full engine list.
+    </p>
+
+    <div class="callout">
+      <strong>Keep this private.</strong> <code>searxng/settings.yml</code> disables the bot
+      limiter and enables the JSON output format — features that should only be exposed on
+      localhost or a private network.
+    </div>
+
+    <h3>Firecrawl tuning</h3>
+    <div class="table-wrap">
+      <table>
+        <tr><th>Variable</th><th>Default</th><th>Description</th></tr>
+        <tr><td><code>NUM_WORKERS_PER_QUEUE</code></td><td>8</td><td>Firecrawl worker threads per queue</td></tr>
+        <tr><td><code>CRAWL_CONCURRENT_REQUESTS</code></td><td>10</td><td>Max concurrent outbound requests</td></tr>
+        <tr><td><code>MAX_CONCURRENT_JOBS</code></td><td>5</td><td>Max simultaneous crawl jobs</td></tr>
+        <tr><td><code>BROWSER_POOL_SIZE</code></td><td>5</td><td>Browser instances in the pool</td></tr>
+        <tr><td><code>MAX_CONCURRENT_PAGES</code></td><td>5</td><td>Camoufox concurrent pages (env on camoufox service)</td></tr>
+      </table>
+    </div>
+  </section>
+
+  <!-- Architecture -->
+  <section id="architecture">
+    <div class="section-header">
+      <i data-lucide="box" class="icon"></i>
+      <h2>Architecture</h2>
+    </div>
+    <p>All services run inside a single Docker Compose network (<code>backend</code>). Only the gateway and SearXNG expose ports to the host.</p>
+    <div class="arch">
+      <pre>
+  LLM / agent ──MCP──▶  mcp-server (node, stdio)
+                              │
+                              ▼
+  LLM / agent ──HTTP─▶  gateway :8088  (FastAPI)
+                         │           │
+                         ▼           ▼
+                    /search       /fetch
+                         │           │
+                         ▼           ▼
+                    SearXNG      Firecrawl api
+                    :8888 (int)  :3002 (int)
+                                     │
+                             ┌───────┴───────┐
+                             ▼               ▼
+                         camoufox    playwright-service
+                         (default)   (fallback/optional)
+                             │
+                      Redis + RabbitMQ + Postgres
+      </pre>
+    </div>
+
+    <h3>Request flow — search with content enrichment</h3>
+    <p>When <code>fetch_content: true</code> is set:</p>
+    <pre>1. gateway  →  SearXNG     (JSON search results)
+2. gateway  →  Firecrawl   (parallel scrape of top N URLs)
+3. Firecrawl→  camoufox    (headless Firefox renders each page)
+4. gateway  ←  Firecrawl   (clean markdown for each page)
+5. caller   ←  gateway     (combined: results + markdown)</pre>
+
+    <h3>Request flow — stealth fetch</h3>
+    <pre>1. caller   →  gateway     (POST /fetch, stealth: true)
+2. gateway  →  Firecrawl   (waitFor forces browser rendering)
+3. Firecrawl→  camoufox    (anti-detect Firefox, Xvfb headless)
+4. caller   ←  gateway     (markdown)</pre>
+  </section>
+
+</main>
+
+<script>
+  lucide.createIcons();
+
+  // Highlight active nav link on scroll
+  const sections = document.querySelectorAll("section[id]");
+  const links = document.querySelectorAll("nav a[href^='#']");
+  const observer = new IntersectionObserver(entries => {
+    entries.forEach(e => {
+      if (e.isIntersecting) {
+        links.forEach(l => l.classList.remove("active"));
+        const active = document.querySelector(`nav a[href='#${e.target.id}']`);
+        if (active) active.classList.add("active");
+      }
+    });
+  }, { rootMargin: "-20% 0px -70% 0px" });
+  sections.forEach(s => observer.observe(s));
+</script>
+</body>
+</html>
