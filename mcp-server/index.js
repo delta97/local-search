@@ -27,7 +27,7 @@ async function callGateway(path, body) {
   return res.json();
 }
 
-const FORMAT_ENUMS = ["markdown", "html", "rawHtml", "links", "screenshot"];
+const FORMAT_ENUMS = ["markdown", "html", "rawHtml", "links", "json", "screenshot"];
 
 server.registerTool(
   "web_search",
@@ -56,7 +56,8 @@ server.registerTool(
         .default(["markdown"])
         .describe(
           "Formats to scrape for each enriched result when fetch_content=true. " +
-            "Options: markdown, html, rawHtml, links, screenshot"
+            "Options: markdown, html, rawHtml, links, json (markdown decomposed into " +
+            "nested sections), screenshot"
         ),
       fetch_stealth: z
         .boolean()
@@ -133,6 +134,7 @@ server.registerTool(
         .describe(
           "Output formats to return. markdown = clean text; html = cleaned HTML; " +
             "rawHtml = unmodified page HTML; links = outbound link list; " +
+            "json = markdown decomposed into nested sections (heading/text/list/links/images); " +
             "screenshot = base64-encoded PNG (large — request only when needed)"
         ),
       only_main_content: z

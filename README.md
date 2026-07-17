@@ -8,6 +8,7 @@ A fully self-hosted web search + page fetching pipeline for LLMs.
   LLM / agent ──MCP──▶  │  gateway (FastAPI, :8088)                    │
   LLM / agent ──HTTP─▶  │    ├── /search ──▶ SearXNG (:8888)           │
                         │    ├── /fetch ───▶ Firecrawl API (:3002)     │
+                        │    ├── /history ─▶ SQLite run history        │
                         │    │                 ├── camoufox ◀─default  │
                         │    │                 ├── playwright-service  │
                         │    │                 ├── redis / rabbitmq    │
@@ -38,7 +39,30 @@ Health check: `curl http://localhost:8088/healthz`
 
 ## Web console
 
-Open **http://localhost:8088** in a browser for an interactive search and page-fetch console. The header shows live health status for all upstream services.
+Open **http://localhost:8088** in a browser for an interactive search and page-fetch console. The header shows live health status for all upstream services. Runs show a live step-by-step progress log ("querying searxng… → scraping … → rendering screenshot…") as they execute, and the **History** tab lists past runs with their full event timelines.
+
+Every output format renders in its own tabbed panel with one-click **copy to clipboard** and **file download** (`.md`, `.html`, `.txt`, `.json`, `.png`). Markdown shows the raw text by default with a rendered-preview toggle; the screenshot copy button places the actual PNG on the clipboard.
+
+## Progress events & run history
+
+Every run (search or fetch, including MCP-driven ones) emits timestamped progress events. They go three places:
+
+1. **Server logs** — `docker compose logs -f gateway` shows each step (`scrape: scraping … via firecrawl`, `screenshot: captured … (1878 KB png)`); `docker compose logs -f camoufox` shows per-page render timing and full tracebacks on failure.
+2. **SSE streaming endpoints** — `POST /search/stream` and `POST /fetch/stream` accept the same JSON bodies as their non-stream counterparts but respond with `text/event-stream`: a series of `{"type":"event","t_ms":…,"stage":…,"message":…}` lines followed by a final `{"type":"result","data":…}` (or `{"type":"error","error":…}`). The web console uses these.
+3. **Run history (SQLite)** — every run is recorded to a local SQLite DB (`HISTORY_DB`, default `/data/history.db`, persisted in the `gateway-data` volume):
+   - `GET /history?limit=50&offset=0` — recent runs (kind, label, status, duration, summary)
+   - `GET /history/{id}` — one run with its full event timeline and original request
+   - `DELETE /history/{id}` / `DELETE /history` — delete one run / clear all
+
+```bash
+# Watch a fetch execute step-by-step
+curl -sN -X POST http://localhost:8088/fetch/stream \
+  -H 'Content-Type: application/json' \
+  -d '{"url": "https://example.com", "formats": ["markdown","screenshot"]}'
+
+# What ran recently, and how long did it take?
+curl -s 'http://localhost:8088/history?limit=10'
+```
 
 ## HTTP API (for any LLM tool-calling setup)
 
@@ -86,7 +110,8 @@ Returns `{url, title, description, status_code, language, formats, markdown, ...
 | `html`       | `html`          | cleaned HTML (respects `only_main_content`) |
 | `rawHtml`    | `raw_html`      | unmodified page HTML |
 | `links`      | `links`         | array of outbound URLs |
-| `screenshot` | `screenshot`    | full-page base64 PNG, captured by camoufox directly (not Firecrawl) — large, request only when needed. When combined with other formats the page is fetched twice (Firecrawl for text, camoufox for the image); on capture failure the other formats still return, with a `screenshot_error` field |
+| `json`       | `json`          | the scraped markdown decomposed server-side into a nested section tree keyed by heading hierarchy: `{title, url, sections: [{heading, level, text, list, links, images, code, sections}]}` (empty fields omitted). Derived from markdown — no extra fetch |
+| `screenshot` | `screenshot`    | full-page base64 PNG, captured by camoufox directly (not Firecrawl) — large, request only when needed. When combined with other formats the page is fetched twice (Firecrawl for text, camoufox for the image); on capture failure the other formats still return, with a `screenshot_error` field. If the full-page capture fails (very tall pages, memory pressure) camoufox falls back to a viewport-only shot and sets `screenshot_note` |
 
 **Content-shaping options:**
 

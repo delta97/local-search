@@ -21,6 +21,9 @@
     --green: #56d99a;
     --red: #e8705a;
     --shadow: 0 24px 60px -20px rgba(0,0,0,.7);
+    --sp-1: 8px;   /* tight: icon gaps, pill padding   */
+    --sp-2: 14px;  /* default: panel padding, stacks   */
+    --sp-3: 22px;  /* loose: section separation        */
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; }
@@ -92,6 +95,8 @@
   }
   .pill:hover { color: var(--ink); border-color: var(--amber-dim); }
   .pill.active { color: var(--amber); border-color: var(--amber-dim); background: rgba(245,184,67,.08); }
+  .pill.sm { padding: 3px 9px; font-size: 10px; }
+  .pill .icon { width: 12px; height: 12px; }
   .optlabel { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; letter-spacing: .09em; text-transform: uppercase; color: var(--muted); }
 
   button.go {
@@ -105,7 +110,32 @@
 
   .status { min-height: 20px; margin-top: 20px; font-size: 13px; color: var(--muted); }
   .status .spin { color: var(--amber); }
-  .status .err { color: var(--red); }
+  .err { color: var(--red); }
+
+  /* live progress steps */
+  .steps { display: grid; gap: 5px; font-size: 12.5px; }
+  .step { display: flex; align-items: baseline; gap: 8px; color: var(--muted); animation: rise .25s ease both; }
+  .step .sicon { width: 14px; flex-shrink: 0; align-self: center; color: var(--amber); }
+  .step.donestep .sicon { color: var(--green); }
+  .step .st { color: #52655c; font-size: 11px; min-width: 46px; text-align: right; }
+  .step .sstage { color: var(--amber-dim); text-transform: uppercase; font-size: 10.5px; letter-spacing: .08em; min-width: 72px; }
+  .step.final { color: var(--ink); }
+  .step.errstep, .step.errstep .sstage { color: var(--red); }
+
+  /* history */
+  .hbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 14px; }
+  .hbar .pills { margin-left: auto; }
+  .hrun { cursor: pointer; }
+  .hrun .hrow { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+  .hrun .hkind { font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; border: 1px solid var(--line); border-radius: 20px; padding: 2px 10px; color: var(--amber); }
+  .hrun .hlabel { font-family: "Fraunces", serif; font-size: 15.5px; color: var(--ink); word-break: break-all; flex: 1; min-width: 200px; }
+  .hrun .hmeta { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+  .hrun .hok { color: var(--green); } .hrun .herr { color: var(--red); }
+  .hrun .hdetail { display: none; margin-top: 12px; border-top: 1px dashed var(--line); padding-top: 12px; }
+  .hrun.open .hdetail { display: block; }
+  .hrun .hdetail pre { background: #0c110f; padding: 12px; border-radius: 8px; overflow: auto; font-size: 12px; max-height: 300px; margin: 8px 0 0; }
+  .hrun .hdel { background: none; border: none; color: var(--muted); cursor: pointer; font-family: inherit; font-size: 11px; padding: 2px 6px; }
+  .hrun .hdel:hover { color: var(--red); }
 
   .results { margin-top: 8px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
   .card {
@@ -119,11 +149,56 @@
   .card .url { color: var(--green); font-size: 12px; word-break: break-all; margin: 4px 0 8px; opacity: .85; }
   .card .snippet { color: #b9c7bf; font-size: 13.5px; }
   .card .meta { margin-top: 10px; font-size: 11px; color: var(--muted); display: flex; gap: 14px; flex-wrap: wrap; }
-  .card .content {
-    margin-top: 12px; border-top: 1px dashed var(--line); padding-top: 12px;
-    font-size: 12.5px; color: #9fb0a7; white-space: pre-wrap; max-height: 240px; overflow: auto;
+
+  /* output panels (fetch result + scraped search results) */
+  .ptabs { display: flex; gap: 6px; flex-wrap: wrap; margin: var(--sp-2) 0 var(--sp-1); }
+  .ptabs .pill { display: inline-flex; align-items: center; gap: 6px; }
+  .opanel {
+    background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px;
+    transition: border-color .18s; animation: rise .3s ease both; overflow: hidden;
   }
-  .card details summary { cursor: pointer; color: var(--amber-dim); font-size: 12px; margin-top: 10px; }
+  .opanel:hover { border-color: var(--amber-dim); }
+  .opanel[hidden] { display: none; }
+  .ohead {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 10px var(--sp-2); border-bottom: 1px solid var(--line); background: rgba(0,0,0,.12);
+  }
+  .ohead .oicon { color: var(--amber-dim); display: flex; }
+  .ohead .oname { font-size: 11px; letter-spacing: .09em; text-transform: uppercase; color: var(--muted); }
+  .ohead .osize { font-size: 11px; color: #52655c; }
+  .ohead .oactions { margin-left: auto; display: flex; gap: 6px; align-items: center; }
+  .obtn {
+    background: transparent; border: 1px solid var(--line); color: var(--muted);
+    border-radius: 6px; padding: 5px 9px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+    font-family: inherit; font-size: 11px; letter-spacing: .04em;
+    transition: color .15s, border-color .15s;
+  }
+  .obtn:hover { color: var(--ink); border-color: var(--amber-dim); }
+  .obtn.copied { color: var(--green); border-color: var(--green); }
+  .obtn .icon { width: 12px; height: 12px; }
+  .obody { padding: var(--sp-2); max-height: 56vh; overflow: auto; font-size: 13px; }
+  .obody pre.oraw {
+    margin: 0; white-space: pre-wrap; word-break: break-word;
+    color: #cdd9d2; font-size: 12.5px; line-height: 1.65;
+  }
+  .obody img { max-width: 100%; border-radius: 6px; display: block; }
+  .obody ul.olinks { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: 12.5px; word-break: break-all; }
+  .obody ul.olinks a { color: var(--amber); text-decoration: none; }
+  .obody ul.olinks a:hover { text-decoration: underline; }
+  .obody .md { background: none; border: none; padding: 0; max-height: none; animation: none; }
+
+  /* collapsible scraped-output section on search cards */
+  .ocollapse-head {
+    display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none;
+    margin-top: 12px; padding: 8px 12px; border: 1px dashed var(--line); border-radius: 8px;
+    color: var(--amber-dim); font-size: 12px; letter-spacing: .04em;
+    transition: color .15s, border-color .15s, background .15s;
+  }
+  .ocollapse-head:hover { color: var(--amber); border-color: var(--amber-dim); background: rgba(245,184,67,.05); }
+  .ocollapse-head .chev { display: flex; margin-left: auto; transition: transform .18s; }
+  .ocollapse.open .ocollapse-head .chev { transform: rotate(180deg); }
+  .ocollapse-body { display: none; margin-top: 10px; }
+  .ocollapse.open .ocollapse-body { display: block; }
 
   .doc { margin-top: 8px; }
   .doc .head { display: flex; justify-content: space-between; gap: 16px; align-items: baseline; flex-wrap: wrap; margin-bottom: 14px; }
@@ -169,6 +244,7 @@
   <div class="tabs">
     <button class="tab active" data-tab="search"><i data-lucide="search" class="icon"></i> Search</button>
     <button class="tab" data-tab="fetch"><i data-lucide="globe" class="icon"></i> Fetch page</button>
+    <button class="tab" data-tab="history"><i data-lucide="history" class="icon"></i> History</button>
   </div>
 
   <!-- SEARCH -->
@@ -205,6 +281,7 @@
           <span class="optlabel"><i data-lucide="file-type-2" class="icon"></i> scrape as</span>
           <label class="opt"><input type="checkbox" class="sfmt" value="markdown" checked /> markdown</label>
           <label class="opt"><input type="checkbox" class="sfmt" value="html" /> html</label>
+          <label class="opt"><input type="checkbox" class="sfmt" value="json" /> json (structured)</label>
           <label class="opt"><input type="checkbox" class="sfmt" value="screenshot" /> screenshot (full page)</label>
         </div>
       </div>
@@ -246,8 +323,8 @@
         <label class="opt"><input type="checkbox" class="fmt" value="html" /> html</label>
         <label class="opt"><input type="checkbox" class="fmt" value="rawHtml" /> raw html</label>
         <label class="opt"><input type="checkbox" class="fmt" value="links" /> links</label>
+        <label class="opt"><input type="checkbox" class="fmt" value="json" /> json (structured)</label>
         <label class="opt"><input type="checkbox" class="fmt" value="screenshot" /> screenshot (full page)</label>
-        <label class="opt"><input type="checkbox" class="fmt" value="json" /> json</label>
       </div>
       <div class="opts">
         <div class="opt" style="flex:1">
@@ -264,7 +341,20 @@
     <div class="doc" id="fetchResult"></div>
   </section>
 
-  <footer>gateway <code>:8088</code> · api <code>/search</code> <code>/fetch</code> · mcp tools <code>web_search</code> <code>fetch_page</code></footer>
+  <!-- HISTORY -->
+  <section class="panel" id="panel-history" hidden>
+    <div class="hbar">
+      <span class="optlabel"><i data-lucide="history" class="icon"></i> recent runs</span>
+      <div class="pills">
+        <button type="button" class="pill" id="historyRefresh">refresh</button>
+        <button type="button" class="pill" id="historyClear">clear all</button>
+      </div>
+    </div>
+    <div class="status" id="historyStatus"></div>
+    <div class="results" id="historyList"></div>
+  </section>
+
+  <footer>gateway <code>:8088</code> · api <code>/search</code> <code>/fetch</code> <code>/history</code> · mcp tools <code>web_search</code> <code>fetch_page</code></footer>
 </div>
 
 <script>
@@ -272,6 +362,114 @@ const $ = s => document.querySelector(s);
 const esc = s => (s ?? "").replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
 const SPIN_SVG = `<svg class="icon icon-spin" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>`;
+const CHECK_SVG = `<svg class="icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>`;
+const X_SVG = `<svg class="icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>`;
+
+// Lucide icon paths, inlined so dynamically injected markup renders reliably
+const lsvg = paths => `<svg class="icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`;
+const ICONS = {
+  markdown:   lsvg('<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/>'),           // file-text
+  html:       lsvg('<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>'),                                                                                                          // code
+  raw_html:   lsvg('<path d="M4 22h14a2 2 0 0 0 2-2V7l-5-5H6a2 2 0 0 0-2 2v4"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="m5 12-3 3 3 3"/><path d="m9 18 3-3-3-3"/>'),                                 // file-code-2
+  links:      lsvg('<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>'),                                  // link
+  json:       lsvg('<path d="M8 3H7a2 2 0 0 0-2 2v5a2 2 0 0 1-2 2 2 2 0 0 1 2 2v5c0 1.1.9 2 2 2h1"/><path d="M16 21h1a2 2 0 0 0 2-2v-5c0-1.1.9-2 2-2a2 2 0 0 1-2-2V5a2 2 0 0 0-2-2h-1"/>'),            // braces
+  screenshot: lsvg('<rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>'),                                       // image
+  copy:       lsvg('<rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>'),
+  download:   lsvg('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/>'),
+  chevron:    lsvg('<path d="m6 9 6 6 6-6"/>'),
+};
+
+const hostOf = u => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return "page"; } };
+
+function b64ToBlob(b64, type) {
+  const bin = atob(b64), bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type });
+}
+
+function flashCopied(btn, ok = true) {
+  const label = btn.querySelector("span"), old = label.textContent;
+  btn.classList.toggle("copied", ok);
+  label.textContent = ok ? "copied" : "failed";
+  setTimeout(() => { btn.classList.remove("copied"); label.textContent = old; }, 1500);
+}
+
+// Unified output-panel component: tab bar + per-format panels with copy/download.
+// `data` keys: markdown, html, raw_html, links, json, screenshot (missing ones skipped).
+function renderOutputPanels(el, data, host) {
+  const DEFS = [
+    ["markdown",   "markdown",   "md",   "text/markdown"],
+    ["html",       "html",       "html", "text/html"],
+    ["raw_html",   "raw html",   "html", "text/html"],
+    ["links",      "links",      "txt",  "text/plain"],
+    ["json",       "json",       "json", "application/json"],
+    ["screenshot", "screenshot", "png",  "image/png"],
+  ].filter(([k]) => data[k] != null && (k !== "links" || data[k].length));
+  if (!DEFS.length) { el.innerHTML = ""; return; }
+
+  const textFor = k =>
+    k === "links" ? data.links.join("\n") :
+    k === "json" ? JSON.stringify(data.json, null, 2) :
+    String(data[k] ?? "");
+  const sizeFor = k =>
+    k === "links" ? `${data.links.length} link${data.links.length === 1 ? "" : "s"}` :
+    k === "screenshot" ? `${Math.round(data.screenshot.length * 3 / 4 / 1024).toLocaleString()} KB png` :
+    `${textFor(k).length.toLocaleString()} chars`;
+  const bodyFor = k =>
+    k === "screenshot" ? `<img src="data:image/png;base64,${data.screenshot}" alt="screenshot" />` :
+    k === "links" ? `<ul class="olinks">${data.links.map(l => `<li><a href="${esc(l)}" target="_blank" rel="noopener">${esc(l)}</a></li>`).join("")}</ul>` :
+    `<pre class="oraw">${esc(textFor(k))}</pre>`;
+
+  el.innerHTML = `
+    <div class="ptabs">${DEFS.map(([k, label], i) =>
+      `<button type="button" class="pill ptab ${i === 0 ? "active" : ""}" data-k="${k}">${ICONS[k]} ${label}</button>`).join("")}</div>
+    ${DEFS.map(([k, label], i) => `
+      <div class="opanel" data-k="${k}" ${i === 0 ? "" : "hidden"}>
+        <div class="ohead">
+          <span class="oicon">${ICONS[k]}</span><span class="oname">${label}</span><span class="osize">${sizeFor(k)}</span>
+          <span class="oactions">
+            ${k === "markdown" ? `<button type="button" class="pill sm mdview active" data-v="raw">raw</button><button type="button" class="pill sm mdview" data-v="rendered">rendered</button>` : ""}
+            ${(k !== "screenshot" || window.ClipboardItem) ? `<button type="button" class="obtn ocopy" title="copy to clipboard">${ICONS.copy}<span>copy</span></button>` : ""}
+            <button type="button" class="obtn odl" title="download">${ICONS.download}<span>download</span></button>
+          </span>
+        </div>
+        <div class="obody">${bodyFor(k)}</div>
+      </div>`).join("")}`;
+
+  el.querySelectorAll(".ptab").forEach(t => t.onclick = () => {
+    el.querySelectorAll(".ptab").forEach(x => x.classList.toggle("active", x === t));
+    el.querySelectorAll(".opanel").forEach(p => p.hidden = p.dataset.k !== t.dataset.k);
+  });
+  el.querySelectorAll(".opanel").forEach(p => {
+    const k = p.dataset.k;
+    const copyBtn = p.querySelector(".ocopy");
+    if (copyBtn) copyBtn.onclick = async () => {
+      try {
+        if (k === "screenshot") {
+          await navigator.clipboard.write([new ClipboardItem({ "image/png": b64ToBlob(data.screenshot, "image/png") })]);
+        } else {
+          await navigator.clipboard.writeText(textFor(k));
+        }
+        flashCopied(copyBtn);
+      } catch { flashCopied(copyBtn, false); }
+    };
+    p.querySelector(".odl").onclick = () => {
+      const [, , ext, mime] = DEFS.find(d => d[0] === k);
+      const blob = k === "screenshot" ? b64ToBlob(data.screenshot, "image/png") : new Blob([textFor(k)], { type: mime });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `${host}-${k === "raw_html" ? "raw" : k}.${ext}`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    };
+    p.querySelectorAll(".mdview").forEach(v => v.onclick = () => {
+      p.querySelectorAll(".mdview").forEach(x => x.classList.toggle("active", x === v));
+      p.querySelector(".obody").innerHTML = v.dataset.v === "raw"
+        ? `<pre class="oraw">${esc(data.markdown)}</pre>`
+        : `<div class="md">${mdToHtml(data.markdown)}</div>`;
+    });
+  });
+}
 
 // tabs
 document.querySelectorAll(".tab").forEach(t => t.onclick = () => {
@@ -280,7 +478,58 @@ document.querySelectorAll(".tab").forEach(t => t.onclick = () => {
   const tab = t.dataset.tab;
   $("#panel-search").hidden = tab !== "search";
   $("#panel-fetch").hidden = tab !== "fetch";
+  $("#panel-history").hidden = tab !== "history";
+  if (tab === "history") loadHistory();
 });
+
+// POST to an SSE endpoint; calls onEvent per progress event, returns the final result
+async function streamPost(url, body, onEvent) {
+  const r = await fetch(url, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) });
+  if (!r.ok) throw new Error(await r.text());
+  const reader = r.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "", final = null;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf("\n\n")) >= 0) {
+      const chunk = buf.slice(0, idx); buf = buf.slice(idx + 2);
+      const line = chunk.split("\n").find(l => l.startsWith("data: "));
+      if (!line) continue;
+      const msg = JSON.parse(line.slice(6));
+      if (msg.type === "result") final = msg.data;
+      else if (msg.type === "error") throw new Error(msg.error);
+      else onEvent(msg);
+    }
+  }
+  if (final === null) throw new Error("stream ended without a result");
+  return final;
+}
+
+// live step log rendered into a .status element
+function makeStepLog(el) {
+  el.innerHTML = `<div class="steps"></div>`;
+  const list = el.querySelector(".steps");
+  let current = null;
+  const settle = () => { if (current) { current.classList.add("donestep"); current.querySelector(".sicon").innerHTML = CHECK_SVG; current = null; } };
+  return {
+    add(ev) {
+      settle();
+      const div = document.createElement("div");
+      div.className = "step";
+      div.innerHTML = `<span class="sicon">${SPIN_SVG}</span><span class="st">+${(ev.t_ms/1000).toFixed(1)}s</span><span class="sstage">${esc(ev.stage)}</span><span>${esc(ev.message)}</span>`;
+      list.appendChild(div);
+      current = div;
+    },
+    done(html) { settle(); const d = document.createElement("div"); d.className = "step final"; d.innerHTML = `<span class="sicon" style="color:var(--green)">${CHECK_SVG}</span><span>${html}</span>`; list.appendChild(d); },
+    fail(html) {
+      if (current) { current.classList.add("errstep"); current.querySelector(".sicon").innerHTML = X_SVG; current = null; }
+      const d = document.createElement("div"); d.className = "step final errstep"; d.innerHTML = `<span class="sicon">${X_SVG}</span><span>${html}</span>`; list.appendChild(d);
+    },
+  };
+}
 
 // health
 (async () => {
@@ -326,14 +575,22 @@ $("#fetchContent").addEventListener("change", () => {
 // search result rendering (cards + json views)
 let lastSearchData = null;
 
+const cardOutputs = x => ({
+  markdown: x.content, html: x.html, raw_html: x.raw_html,
+  links: x.links, json: x.json, screenshot: x.screenshot,
+});
+
 function renderSearchCards(d) {
   $("#searchResults").innerHTML = d.results.map((x,i) => {
     const parts = [];
-    if (x.content) parts.push(`<details><summary>scraped markdown</summary><div class="content">${esc(x.content)}</div></details>`);
-    if (x.html) parts.push(`<details><summary>scraped html</summary><div class="content">${esc(x.html)}</div></details>`);
-    if (x.screenshot) parts.push(`<details><summary>screenshot</summary><img src="data:image/png;base64,${x.screenshot}" alt="screenshot" style="max-width:100%;border-radius:6px;margin-top:8px" /></details>`);
+    const outs = cardOutputs(x);
+    const fmts = Object.keys(outs).filter(k => outs[k] != null && (k !== "links" || outs[k].length));
+    if (fmts.length) parts.push(`<div class="ocollapse" data-i="${i}">
+      <div class="ocollapse-head">${ICONS.markdown}<span>scraped output · ${fmts.map(esc).join(", ")}</span><span class="chev">${ICONS.chevron}</span></div>
+      <div class="ocollapse-body"></div></div>`);
     if (x.content_error) parts.push(`<div class="meta"><span class="err">scrape failed: ${esc(String(x.content_error))}</span></div>`);
-    const scraped = (x.content || x.html || x.screenshot) ? '<span class="badge">scraped</span>' : "";
+    if (x.screenshot_error) parts.push(`<div class="meta"><span class="err">screenshot failed: ${esc(String(x.screenshot_error))}</span></div>`);
+    const scraped = fmts.length ? '<span class="badge">scraped</span>' : "";
     return `<div class="card" style="animation-delay:${i*40}ms">
       <div class="rank">${String(i+1).padStart(2,"0")}</div>
       <a class="title" href="${esc(x.url)}" target="_blank" rel="noopener">${esc(x.title)||"(untitled)"}</a> ${scraped}
@@ -342,6 +599,18 @@ function renderSearchCards(d) {
       <div class="meta">${x.engine?`engine: ${esc(x.engine)}`:""}${x.score?` · score: ${(+x.score).toFixed(1)}`:""}${x.published_date?` · ${esc(x.published_date)}`:""}</div>
       ${parts.join("")}</div>`;
   }).join("") || '<div class="status">no results.</div>';
+
+  $("#searchResults").querySelectorAll(".ocollapse").forEach(c => {
+    const x = d.results[+c.dataset.i];
+    const body = c.querySelector(".ocollapse-body");
+    c.querySelector(".ocollapse-head").onclick = () => {
+      c.classList.toggle("open");
+      if (!body.dataset.rendered) {
+        renderOutputPanels(body, cardOutputs(x), hostOf(x.url));
+        body.dataset.rendered = "1";
+      }
+    };
+  });
 }
 
 function renderSearchJson(d) {
@@ -364,7 +633,7 @@ $("#searchForm").onsubmit = async e => {
   $("#searchResults").innerHTML = "";
   $("#viewToggle").style.display = "none";
   const enrich = $("#fetchContent").checked;
-  $("#searchStatus").innerHTML = `<span class="spin">${SPIN_SVG} querying searxng${enrich ? " + scraping top results" : ""}…</span>`;
+  const steps = makeStepLog($("#searchStatus"));
   try {
     const body = { query: q, max_results: +$("#max").value, fetch_content: enrich,
                    fetch_top: +$("#fetchTop").value, time_range: getTimeRange() };
@@ -372,17 +641,15 @@ $("#searchForm").onsubmit = async e => {
       const sfmts = [...document.querySelectorAll(".sfmt:checked")].map(c => c.value);
       body.fetch_formats = sfmts.length ? sfmts : ["markdown"];
     }
-    const r = await fetch("/search", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) });
-    if (!r.ok) throw new Error(await r.text());
-    const d = await r.json();
+    const d = await streamPost("/search/stream", body, ev => steps.add(ev));
     const tr = getTimeRange();
-    $("#searchStatus").innerHTML = `${d.result_count} result${d.result_count===1?"":"s"} for “${esc(q)}”${tr?` · past ${tr}`:""}`;
+    steps.done(`${d.result_count} result${d.result_count===1?"":"s"} for “${esc(q)}”${tr?` · past ${tr}`:""}`);
     lastSearchData = d;
     $("#viewToggle").style.display = "flex";
     document.querySelectorAll(".view-pill").forEach(x => x.classList.toggle("active", x.dataset.view === "cards"));
     renderSearchCards(d);
   } catch (err) {
-    $("#searchStatus").innerHTML = `<span class="err">error: ${esc(String(err.message||err))}</span>`;
+    steps.fail(`error: ${esc(String(err.message||err))}`);
   } finally { btn.disabled = false; }
 };
 
@@ -393,27 +660,22 @@ $("#fetchForm").onsubmit = async e => {
   const btn = e.target.querySelector("button"); btn.disabled = true;
   $("#fetchResult").innerHTML = "";
   const stealth = $("#stealth").checked;
-  const allFormats = [...document.querySelectorAll(".fmt:checked")].map(c => c.value);
-  const wantJson = allFormats.includes("json");
-  // "json" is rendered client-side from the response; the API only accepts Firecrawl formats
-  const formats = allFormats.filter(f => f !== "json");
+  const formats = [...document.querySelectorAll(".fmt:checked")].map(c => c.value);
   const waitFor = +$("#waitFor").value || 0;
   const location = $("#location").value.trim() || null;
   const includeTags = $("#includeTags").value.trim() ? $("#includeTags").value.split(",").map(s=>s.trim()).filter(Boolean) : null;
   const excludeTags = $("#excludeTags").value.trim() ? $("#excludeTags").value.split(",").map(s=>s.trim()).filter(Boolean) : null;
-  $("#fetchStatus").innerHTML = `<span class="spin">${SPIN_SVG} fetching via firecrawl${stealth?" + camoufox stealth (slower)":""}…</span>`;
+  const steps = makeStepLog($("#fetchStatus"));
   try {
     const body = { url, formats, only_main_content: $("#mainOnly").checked, stealth };
     if (waitFor) body.wait_for = waitFor;
     if (location) body.location = location;
     if (includeTags) body.include_tags = includeTags;
     if (excludeTags) body.exclude_tags = excludeTags;
-    const r = await fetch("/fetch", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) });
-    if (!r.ok) throw new Error(await r.text());
-    const d = await r.json();
+    const d = await streamPost("/fetch/stream", body, ev => steps.add(ev));
     const mdLen = (d.markdown||"").length;
-    const fmtList = (d.formats||["markdown"]).concat(wantJson ? ["json"] : []).join(", ");
-    $("#fetchStatus").innerHTML = `HTTP ${d.status_code ?? "?"} · formats: ${esc(fmtList)}${mdLen?` · ${mdLen.toLocaleString()} chars markdown`:''}${d.truncated?` (truncated @ ${d.truncated_at})`:''}${d.screenshot_error?` · <span class="err">screenshot failed: ${esc(String(d.screenshot_error))}</span>`:''}`;
+    const fmtList = (d.formats||["markdown"]).join(", ");
+    steps.done(`HTTP ${d.status_code ?? "?"} · formats: ${esc(fmtList)}${mdLen?` · ${mdLen.toLocaleString()} chars markdown`:''}${d.truncated?` (truncated @ ${d.truncated_at})`:''}${d.screenshot_note?` · <span style="color:var(--amber)">${esc(String(d.screenshot_note))}</span>`:''}${d.screenshot_error?` · <span class="err">screenshot failed: ${esc(String(d.screenshot_error))}</span>`:''}`);
 
     const bits = [];
     if (stealth) bits.push('<span class="badge">stealth</span>');
@@ -423,18 +685,81 @@ $("#fetchForm").onsubmit = async e => {
         <div><h2>${esc(d.title)||"(untitled)"}</h2><div class="u">${esc(d.url)}</div></div>
         ${bits.join("")}</div>
       ${d.description?`<p class="snippet" style="margin:0 0 14px;color:var(--muted)">${esc(d.description)}</p>`:""}
-      <div class="md">${d.markdown ? mdToHtml(d.markdown) : "<em>no markdown requested</em>"}</div>`;
-
-    const extras = [];
-    if (wantJson) extras.push(`<details><summary>json</summary><pre><code>${esc(JSON.stringify(d, null, 2))}</code></pre></details>`);
-    if (d.screenshot) extras.push(`<details><summary>screenshot</summary><img src="data:image/png;base64,${d.screenshot}" alt="screenshot" style="max-width:100%;border-radius:6px" /></details>`);
-    if (d.links && d.links.length) extras.push(`<details><summary>links (${d.links.length})</summary><ul>${d.links.map(l=>`<li><a href="${esc(l)}" target="_blank" rel="noopener">${esc(l)}</a></li>`).join("")}</ul></details>`);
-    if (d.html) extras.push(`<details><summary>html</summary><pre><code>${esc(d.html)}</code></pre></details>`);
-    if (d.raw_html) extras.push(`<details><summary>raw html</summary><pre><code>${esc(d.raw_html)}</code></pre></details>`);
-    if (extras.length) $("#fetchResult").innerHTML += `<div style="margin-top:14px">${extras.join("")}</div>`;
+      <div id="fetchPanels"></div>`;
+    renderOutputPanels($("#fetchPanels"), d, hostOf(d.url));
   } catch (err) {
-    $("#fetchStatus").innerHTML = `<span class="err">error: ${esc(String(err.message||err))}</span>`;
+    steps.fail(`error: ${esc(String(err.message||err))}`);
   } finally { btn.disabled = false; }
+};
+
+// ── history ──
+const fmtWhen = iso => {
+  const d = new Date(iso), diff = (Date.now() - d.getTime()) / 1000;
+  if (diff < 60) return `${Math.max(1, Math.floor(diff))}s ago`;
+  if (diff < 3600) return `${Math.floor(diff/60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff/3600)}h ago`;
+  return d.toLocaleString();
+};
+
+async function loadHistory() {
+  $("#historyStatus").innerHTML = `<span class="spin">${SPIN_SVG} loading…</span>`;
+  try {
+    const d = await (await fetch("/history?limit=50")).json();
+    $("#historyStatus").innerHTML = d.runs.length ? "" : "no runs yet — searches and fetches will appear here.";
+    $("#historyList").innerHTML = d.runs.map(r => {
+      const s = r.summary || {};
+      const bits = [];
+      if (r.kind === "search" && s.result_count != null) bits.push(`${s.result_count} results`);
+      if (s.scraped) bits.push(`${s.scraped} scraped`);
+      if (s.screenshots) bits.push(`${s.screenshots} shots`);
+      if (r.kind === "fetch" && s.markdown_chars) bits.push(`${(+s.markdown_chars).toLocaleString()} chars`);
+      if (r.kind === "fetch" && s.screenshot) bits.push("screenshot");
+      return `<div class="card hrun" data-id="${r.id}">
+        <div class="hrow">
+          <span class="hkind">${esc(r.kind)}</span>
+          <span class="hlabel">${esc(r.label||"")}</span>
+          <span class="hmeta ${r.status==="ok"?"hok":"herr"}">${r.status==="ok"?"ok":"error"}</span>
+          <span class="hmeta">${(r.duration_ms/1000).toFixed(1)}s · ${fmtWhen(r.started_at)}</span>
+          <button class="hdel" title="delete run">${X_SVG}</button>
+        </div>
+        ${r.error?`<div class="hmeta" style="margin-top:6px"><span class="herr">${esc(r.error)}</span></div>`:""}
+        <div class="hdetail"></div>
+      </div>`;
+    }).join("");
+  } catch (err) {
+    $("#historyStatus").innerHTML = `<span class="err">error: ${esc(String(err.message||err))}</span>`;
+  }
+}
+
+$("#historyList").addEventListener("click", async e => {
+  const card = e.target.closest(".hrun");
+  if (!card) return;
+  if (e.target.closest(".hdel")) {
+    await fetch(`/history/${card.dataset.id}`, { method: "DELETE" });
+    card.remove();
+    return;
+  }
+  if (card.classList.toggle("open")) {
+    const detail = card.querySelector(".hdetail");
+    if (!detail.dataset.loaded) {
+      detail.innerHTML = `<span class="spin">${SPIN_SVG} loading…</span>`;
+      try {
+        const d = await (await fetch(`/history/${card.dataset.id}`)).json();
+        const timeline = (d.events||[]).map(ev =>
+          `<div class="step donestep"><span class="st">+${(ev.t_ms/1000).toFixed(1)}s</span><span class="sstage">${esc(ev.stage)}</span><span>${esc(ev.message)}</span></div>`).join("");
+        detail.innerHTML = `<div class="steps">${timeline||"<em>no events recorded</em>"}</div>
+          <details style="margin-top:10px"><summary style="cursor:pointer;color:var(--amber-dim);font-size:12px">request + summary json</summary>
+          <pre><code>${esc(JSON.stringify({request: d.request, summary: d.summary}, null, 2))}</code></pre></details>`;
+        detail.dataset.loaded = "1";
+      } catch (err) { detail.innerHTML = `<span class="err">error: ${esc(String(err.message||err))}</span>`; }
+    }
+  }
+});
+
+$("#historyRefresh").onclick = loadHistory;
+$("#historyClear").onclick = async () => {
+  await fetch("/history", { method: "DELETE" });
+  loadHistory();
 };
 
 lucide.createIcons();
