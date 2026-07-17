@@ -1,0 +1,232 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-07-17T00:00:00Z",
+  "title": "Design System: local-search",
+  "extensions": {
+    "colorMeta": {
+      "harvest": {
+        "role": "primary",
+        "displayName": "Harvest Gold",
+        "canonical": "#f5b843",
+        "tonalRamp": ["#2a1800", "#3d2500", "#5c3800", "#7a4e00", "#9c6800", "#b9862a", "#f5b843", "#ffde88"]
+      },
+      "harvest-dim": {
+        "role": "primary-muted",
+        "displayName": "Harvest Dim",
+        "canonical": "#b9862a",
+        "tonalRamp": ["#1e1200", "#32200a", "#4d3214", "#69471e", "#845c28", "#b9862a", "#d4a855", "#ebcf90"]
+      },
+      "phosphor": {
+        "role": "success",
+        "displayName": "Phosphor Green",
+        "canonical": "#56d99a",
+        "tonalRamp": ["#003520", "#005032", "#006e46", "#00945e", "#2db87d", "#56d99a", "#8de8be", "#c2f2de"]
+      },
+      "fault": {
+        "role": "error",
+        "displayName": "Fault Red",
+        "canonical": "#e8705a",
+        "tonalRamp": ["#2e0c05", "#51160a", "#782110", "#9d2c15", "#c4401f", "#e8705a", "#f0a090", "#f7d0c8"]
+      },
+      "forest-void": {
+        "role": "neutral-bg",
+        "displayName": "Forest Void",
+        "canonical": "#0e1512",
+        "tonalRamp": ["#050a07", "#0e1512", "#141d19", "#18231e", "#263630", "#3d544c", "#577268", "#8aada1"]
+      },
+      "forest-panel": {
+        "role": "neutral-surface",
+        "displayName": "Forest Panel",
+        "canonical": "#141d19",
+        "tonalRamp": ["#070e0b", "#0e1512", "#141d19", "#18231e", "#263630", "#3d544c", "#577268", "#8aada1"]
+      },
+      "forest-card": {
+        "role": "neutral-surface-2",
+        "displayName": "Forest Card",
+        "canonical": "#18231e",
+        "tonalRamp": ["#070e0b", "#0e1512", "#141d19", "#18231e", "#263630", "#3d544c", "#577268", "#8aada1"]
+      },
+      "forest-deep": {
+        "role": "neutral-surface-deep",
+        "displayName": "Forest Deep",
+        "canonical": "#0c110f",
+        "tonalRamp": ["#040807", "#0c110f", "#101811", "#141d19", "#1e2a22", "#304840", "#4a6a61", "#7d9e96"]
+      },
+      "ink": {
+        "role": "neutral-text",
+        "displayName": "Ink",
+        "canonical": "#e8f0ea",
+        "tonalRamp": ["#263630", "#3d5448", "#577268", "#7f948a", "#b0c7be", "#cdd9d2", "#dfe9e3", "#e8f0ea"]
+      },
+      "ink-muted": {
+        "role": "neutral-text-muted",
+        "displayName": "Ink Muted",
+        "canonical": "#7f948a",
+        "tonalRamp": ["#263630", "#3d5448", "#506b62", "#7f948a", "#a4b8b2", "#c0d0cc", "#d4e2de", "#e8f0ea"]
+      },
+      "line": {
+        "role": "neutral-border",
+        "displayName": "Line",
+        "canonical": "#263630",
+        "tonalRamp": ["#0e1512", "#141d19", "#18231e", "#263630", "#3d5448", "#577268", "#7f948a", "#b0c7be"]
+      }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display", "purpose": "Product wordmark only. One instance per page." },
+      "headline": { "displayName": "Headline", "purpose": "Fetched document title in the Fetch result panel." },
+      "title": { "displayName": "Title", "purpose": "Search result card titles. The user's data surface." },
+      "body": { "displayName": "Body", "purpose": "Input text values and fetched document markdown prose." },
+      "label": { "displayName": "Label", "purpose": "All interface chrome: buttons, tabs, pills, form labels. Always uppercase, always tracked." }
+    },
+    "shadows": [
+      {
+        "name": "panel-ambient",
+        "value": "0 24px 60px -20px rgba(0,0,0,0.7)",
+        "purpose": "The primary content panel only. Permanent structural undercast; not a hover-lift effect."
+      },
+      {
+        "name": "focus-glow",
+        "value": "0 0 0 3px rgba(245,184,67,0.12)",
+        "purpose": "Universal focus treatment on all interactive elements. State indicator, not elevation."
+      }
+    ],
+    "motion": [
+      {
+        "name": "rise",
+        "value": "translateY(8px) → translateY(0), opacity 0 → 1, 0.35s ease",
+        "purpose": "Entrance animation for content arriving as a result of user action (cards, results, document panels). Stagger 40ms per item in lists."
+      },
+      {
+        "name": "pulse",
+        "value": "opacity 1 → 0.35 → 1, 2.4s ease-in-out infinite",
+        "purpose": "The live-status dot in the header. Communicates that the system is running."
+      },
+      {
+        "name": "spin",
+        "value": "rotate 360deg, 0.85s linear infinite",
+        "purpose": "Spinner icon during active in-flight requests."
+      },
+      {
+        "name": "state-transition",
+        "value": "0.15s–0.18s",
+        "purpose": "Default duration for color, border, background, and box-shadow transitions on interactive components."
+      }
+    ],
+    "breakpoints": [
+      { "name": "wrap-max", "value": "1080px", "purpose": "Maximum content width for the main layout wrap." }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The sole CTA button variant. Harvest amber fill, near-black text, 1px physical press on active.",
+      "html": "<button class=\"ds-btn-primary\">Search</button>",
+      "css": ".ds-btn-primary { font-family: 'Space Mono', ui-monospace, monospace; font-weight: 700; font-size: 14px; letter-spacing: 0.06em; text-transform: uppercase; color: #10160f; background: #f5b843; border: none; border-radius: 8px; padding: 13px 26px; cursor: pointer; white-space: nowrap; transition: transform 0.1s, background 0.15s; } .ds-btn-primary:hover { background: #ffca5c; } .ds-btn-primary:active { transform: translateY(1px); } .ds-btn-primary:disabled { background: #b9862a; opacity: 0.7; cursor: wait; } .ds-btn-primary:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(245,184,67,0.12); }"
+    },
+    {
+      "name": "Tab Row",
+      "kind": "nav",
+      "refersTo": "tab-active",
+      "description": "Three-tab navigation above the main panel. Active tab merges visually with the panel via missing bottom border.",
+      "html": "<div class=\"ds-tabs\"><button class=\"ds-tab ds-tab--active\">Search</button><button class=\"ds-tab\">Fetch page</button><button class=\"ds-tab\">History</button></div>",
+      "css": ".ds-tabs { display: flex; gap: 6px; } .ds-tab { font-family: 'Space Mono', ui-monospace, monospace; font-size: 13px; letter-spacing: 0.05em; text-transform: uppercase; background: transparent; color: #7f948a; border: 1px solid transparent; border-bottom: none; padding: 12px 20px; cursor: pointer; border-radius: 8px 8px 0 0; transition: color 0.18s; } .ds-tab:hover { color: #e8f0ea; } .ds-tab--active { color: #f5b843; background: #141d19; border-color: #263630; } .ds-tab:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(245,184,67,0.12); }"
+    },
+    {
+      "name": "Text Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Full-width text field. Sits at Forest Void depth (same as body background) so it reads as recessed.",
+      "html": "<div class=\"ds-field\"><label class=\"ds-label\" for=\"ds-q\">query</label><input class=\"ds-input\" id=\"ds-q\" type=\"text\" placeholder=\"e.g. self-hosted vector database\" /></div>",
+      "css": ".ds-field { display: grid; gap: 7px; } .ds-label { font-family: 'Space Mono', ui-monospace, monospace; font-size: 11px; letter-spacing: 0.09em; text-transform: uppercase; color: #7f948a; } .ds-input { font-family: 'Space Mono', ui-monospace, monospace; font-size: 15px; color: #e8f0ea; background: #0e1512; border: 1px solid #263630; border-radius: 8px; padding: 13px 15px; width: 100%; transition: border-color 0.15s, box-shadow 0.15s; } .ds-input::placeholder { color: #52655c; } .ds-input:focus { outline: none; border-color: #b9862a; box-shadow: 0 0 0 3px rgba(245,184,67,0.12); }"
+    },
+    {
+      "name": "Pill",
+      "kind": "chip",
+      "refersTo": "pill-active",
+      "description": "Small selector control for time-range filters and view toggles. Harvest fill at 8% opacity when active.",
+      "html": "<div class=\"ds-pills\"><button class=\"ds-pill ds-pill--active\" type=\"button\">any</button><button class=\"ds-pill\" type=\"button\">day</button><button class=\"ds-pill\" type=\"button\">week</button><button class=\"ds-pill\" type=\"button\">month</button></div>",
+      "css": ".ds-pills { display: flex; gap: 4px; flex-wrap: wrap; } .ds-pill { font-family: 'Space Mono', ui-monospace, monospace; font-size: 11.5px; letter-spacing: 0.05em; text-transform: uppercase; background: transparent; color: #7f948a; border: 1px solid #263630; border-radius: 6px; padding: 5px 11px; cursor: pointer; transition: color 0.15s, border-color 0.15s, background 0.15s; } .ds-pill:hover { color: #e8f0ea; border-color: #b9862a; } .ds-pill--active { color: #f5b843; border-color: #b9862a; background: rgba(245,184,67,0.08); } .ds-pill:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(245,184,67,0.12); }"
+    },
+    {
+      "name": "Badge",
+      "kind": "chip",
+      "refersTo": "badge",
+      "description": "Inline metadata label for result cards and fetch panel headers. Pill radius, harvest colors, transparent fill.",
+      "html": "<span class=\"ds-badge\">scraped</span>",
+      "css": ".ds-badge { font-family: 'Space Mono', ui-monospace, monospace; font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; color: #f5b843; border: 1px solid #b9862a; border-radius: 20px; padding: 3px 10px; display: inline-block; }"
+    },
+    {
+      "name": "Result Card",
+      "kind": "card",
+      "refersTo": null,
+      "description": "Core content atom for search results. Fraunces title with Harvest hover, Phosphor URL, Space Mono metadata. Rise entrance.",
+      "html": "<div class=\"ds-card\"><div class=\"ds-card__rank\">01</div><a class=\"ds-card__title\" href=\"#\">Self-hosted vector databases compared</a><div class=\"ds-card__url\">hn.algolia.com/search?q=vector+database</div><div class=\"ds-card__snippet\">A comprehensive analysis of Chroma, Qdrant, Weaviate, and Milvus across performance and ease of use...</div><div class=\"ds-card__meta\">engine: google · score: 4.2 · 2024-12</div></div>",
+      "css": "@keyframes ds-rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } } .ds-card { background: #18231e; border: 1px solid #263630; border-radius: 10px; padding: 16px 18px; animation: ds-rise 0.35s ease both; } .ds-card__rank { color: #b9862a; font-size: 12px; font-family: 'Space Mono', ui-monospace, monospace; margin-bottom: 2px; } .ds-card__title { font-family: 'Fraunces', Georgia, serif; font-size: 18px; font-weight: 600; color: #e8f0ea; text-decoration: none; display: block; transition: color 0.15s; } .ds-card__title:hover { color: #f5b843; } .ds-card__url { color: #56d99a; font-size: 12px; margin: 4px 0 8px; opacity: 0.85; word-break: break-all; font-family: 'Space Mono', ui-monospace, monospace; } .ds-card__snippet { color: #b9c7bf; font-size: 13.5px; font-family: 'Space Mono', ui-monospace, monospace; } .ds-card__meta { color: #7f948a; font-size: 11px; margin-top: 10px; font-family: 'Space Mono', ui-monospace, monospace; }"
+    },
+    {
+      "name": "Panel Shell",
+      "kind": "card",
+      "refersTo": null,
+      "description": "The main content container. Forest Panel surface, structural drop shadow, zero top-left radius to meet the active tab.",
+      "html": "<section class=\"ds-panel\"><p style=\"color:#7f948a;font-family:'Space Mono',monospace;font-size:13px\">Panel content here.</p></section>",
+      "css": ".ds-panel { background: #141d19; border: 1px solid #263630; border-radius: 0 12px 12px 12px; box-shadow: 0 24px 60px -20px rgba(0,0,0,0.7); padding: 26px; }"
+    },
+    {
+      "name": "Live Step Log",
+      "kind": "custom",
+      "refersTo": null,
+      "description": "Inline progress feed for active operations. Harvest spinner → Phosphor check on settle. Fault red on error.",
+      "html": "<div class=\"ds-steps\"><div class=\"ds-step ds-step--done\"><span class=\"ds-step__icon\"><svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#56d99a\" stroke-width=\"2.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M20 6 9 17l-5-5\"/></svg></span><span class=\"ds-step__t\">+0.8s</span><span class=\"ds-step__stage\">search</span><span>querying searxng for results</span></div><div class=\"ds-step ds-step--active\"><span class=\"ds-step__icon\"><svg class=\"ds-spin\" width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#f5b843\" stroke-width=\"2.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M21 12a9 9 0 1 1-6.219-8.56\"/></svg></span><span class=\"ds-step__t\">+1.4s</span><span class=\"ds-step__stage\">scrape</span><span>enriching top 3 results</span></div></div>",
+      "css": "@keyframes ds-spin-anim { to { transform: rotate(360deg); } } .ds-spin { animation: ds-spin-anim 0.85s linear infinite; } .ds-steps { display: grid; gap: 5px; } .ds-step { display: flex; align-items: baseline; gap: 8px; color: #7f948a; font-family: 'Space Mono', ui-monospace, monospace; font-size: 12.5px; } .ds-step__icon { width: 14px; flex-shrink: 0; align-self: center; } .ds-step__t { color: #52655c; font-size: 11px; min-width: 46px; text-align: right; } .ds-step__stage { color: #b9862a; text-transform: uppercase; font-size: 10.5px; letter-spacing: 0.08em; min-width: 72px; } .ds-step--done { color: #7f948a; } .ds-step--active { color: #7f948a; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Instrument Panel",
+    "overview": "This is a precision instrument for autonomous retrieval — a developer console that sits between the user and a search-scrape-fetch infrastructure stack. The aesthetic philosophy is absolute: every pixel earns its place by conveying state, structure, or information. Nothing is decorative. Nothing shouts.\n\nThe palette is deep forest dark — not the blue-black of a generic IDE, not the purple-neon of cyberpunk. Green-black, like a terminal screen seen through a canopy. Harvest amber is the primary signal; Phosphor green marks liveness and success. A scanline texture overlay creates the CRT substrate that gives the surface a physical quality without becoming a costume.\n\nThe typeface split is the system's most deliberate decision: Fraunces appears only on content belonging to the user's data — search result titles, fetched document headings, the product wordmark. Space Mono covers every word the interface itself speaks. The two voices never cross. The machine's chrome disappears into the task.\n\nWhat this system is not: it is not a SaaS dashboard with warm beige backgrounds, gradient text CTAs, hero metrics, or identical rounded-card grids.",
+    "keyCharacteristics": [
+      "Monospace-native: Space Mono for all interface text — labels, inputs, tabs, buttons, metadata, status",
+      "Serif contrast: Fraunces appears only at the content tier — result titles, document headings, the product name",
+      "Amber-as-signal: Harvest marks exactly three categories — active states, primary CTAs, live progress",
+      "Tonal depth: four surface levels (Forest Void → Forest Panel → Forest Card → Forest Deep), no decorative shadows",
+      "Scanline substrate: a fixed ::before texture creates the console grain without going full costume"
+    ],
+    "rules": [
+      {
+        "name": "The One Signal Rule",
+        "body": "Harvest appears on ≤3 UI categories: active/current-selection states, the primary CTA button, and live-progress indicators. Every harvest appearance answers 'what is currently active or ready to act.'",
+        "section": "colors"
+      },
+      {
+        "name": "The Domain Rule",
+        "body": "Fraunces appears where the user's data lands (titles they searched for, documents they fetched, the product name). Space Mono appears where the interface itself speaks (buttons, labels, inputs, status). These domains never cross.",
+        "section": "typography"
+      },
+      {
+        "name": "The Floor Rule",
+        "body": "Shadows do not represent hover states, interaction feedback, or lifted components. The one panel shadow is a static declaration of structural depth. Interactive state is communicated through color, never shadow lift.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do use Fraunces exclusively on content the user retrieved: search result titles, fetched document titles, and the product wordmark.",
+      "Do use Harvest (#f5b843) only for active/current-selection states, the primary CTA button, and live-progress step icons.",
+      "Do maintain the four-level surface ramp strictly: Forest Void (body/inputs), Forest Panel (primary surface), Forest Card (cards/nested), Forest Deep (code blocks).",
+      "Do use the focus glow — 0 0 0 3px rgba(245,184,67,0.12) — as the universal focus treatment on all interactive elements.",
+      "Do use the rise animation (translateY 8px → 0, opacity 0 → 1, 0.35s ease) for any new content appearing as a result of user action.",
+      "Do ship every interactive component with all five states: default, hover, focus, active, disabled."
+    ],
+    "donts": [
+      "Don't introduce any warm-neutral, light-mode, or near-white background. SaaS dashboard beige, paper white, warm-sand backgrounds are explicitly prohibited.",
+      "Don't use gradient text (background-clip: text). Color carries semantic meaning; decorative gradients dilute every color role.",
+      "Don't add a third typeface. The Fraunces/Space Mono axis is complete. No sans-serif.",
+      "Don't use Fraunces on buttons, labels, form controls, status messages, tabs, or any UI chrome.",
+      "Don't add drop shadows to result cards, history cards, or any repeated content element.",
+      "Don't build hero-metric tiles, big-number stat cards, or dashboard aggregate views.",
+      "Don't use full-opacity Harvest on inactive or decorative elements. Full Harvest is reserved for active signal only.",
+      "Don't invent non-standard affordances for standard patterns. No custom scrollbars, no unusual modal patterns.",
+      "Don't put the scanline texture or radial background halos on nested surfaces. The atmospheric background belongs to the body layer only."
+    ]
+  }
+}
