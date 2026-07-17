@@ -31,7 +31,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
+import xml.etree.ElementTree as ET
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -1254,6 +1255,185 @@ async def fetch_stream(req: FetchRequest):
 
 # ── Map: discover a site's URLs via Firecrawl (no scraping) ──
 
+_SITEMAP_BROWSER_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+)
+_SITEMAP_NS = "http://www.sitemaps.org/schemas/sitemap/0.9"
+_COMMON_SUBDOMAINS = ["www", "blog", "app", "api", "help", "docs", "support", "news", "m"]
+
+
+def _root_domain(url: str) -> str:
+    p = urlparse(url)
+    return f"{p.scheme}://{p.netloc}"
+
+
+async def _fetch_xml(url: str) -> str | None:
+    """Fetch a sitemap URL. Tries direct HTTP first, then Firecrawl rawHtml fallback."""
+    headers = {"User-Agent": _SITEMAP_BROWSER_UA, "Accept": "application/xml,text/xml,*/*"}
+    try:
+        r = await client.get(url, headers=headers, timeout=10, follow_redirects=True)
+        if r.status_code == 200:
+            ct = r.headers.get("content-type", "")
+            text = r.text
+            if "xml" in ct or text.lstrip().startswith("<?xml") or "<urlset" in text or "<sitemapindex" in text:
+                return text
+    except Exception:
+        pass
+    # Fallback: ask Firecrawl to fetch the raw bytes for us
+    try:
+        r = await client.post(
+            f"{FIRECRAWL_URL}/v2/scrape",
+            json={"url": url, "formats": ["rawHtml"]},
+            headers=FIRECRAWL_HEADERS,
+            timeout=20,
+        )
+        if r.status_code == 200:
+            body = r.json()
+            if body.get("success"):
+                raw = body.get("data", {}).get("rawHtml", "")
+                if "<urlset" in raw or "<sitemapindex" in raw or "<?xml" in raw:
+                    return raw
+    except Exception:
+        pass
+    return None
+
+
+def _parse_sitemap(xml_text: str) -> tuple[list[str], list[str]]:
+    """Return (page_urls, child_sitemap_urls). Handles with/without namespace; regex fallback."""
+    ns = f"{{{_SITEMAP_NS}}}"
+    page_urls: list[str] = []
+    sitemap_urls: list[str] = []
+    try:
+        root = ET.fromstring(xml_text)
+        tag = root.tag
+        is_index = "sitemapindex" in tag
+        # Try namespace-qualified names first, then bare names
+        for prefix in (ns, ""):
+            sm_tag, url_tag, loc_tag = f"{prefix}sitemap", f"{prefix}url", f"{prefix}loc"
+            if is_index:
+                items = root.findall(f".//{sm_tag}")
+            else:
+                items = root.findall(f".//{url_tag}")
+            if not items:
+                continue
+            for el in items:
+                loc = el.find(loc_tag)
+                if loc is not None and loc.text:
+                    if is_index:
+                        sitemap_urls.append(loc.text.strip())
+                    else:
+                        page_urls.append(loc.text.strip())
+            break  # found with this prefix, stop
+    except ET.ParseError:
+        all_locs = re.findall(r"<loc>\s*(https?://[^\s<]+)\s*</loc>", xml_text)
+        if re.search(r"<sitemapindex", xml_text, re.I):
+            sitemap_urls = all_locs
+        else:
+            page_urls = all_locs
+    return page_urls, sitemap_urls
+
+
+async def _discover_sitemap_urls(root_url: str, include_subdomains: bool, log: RunLog) -> list[str]:
+    """
+    Discover URLs by parsing the site's sitemaps.
+    1. Check robots.txt for Sitemap: directives.
+    2. Try /sitemap.xml and /sitemap_index.xml.
+    3. Follow sitemap index entries (max 2 levels deep).
+    4. If include_subdomains, also probe sitemaps of discovered and common subdomains.
+    """
+    origin = _root_domain(root_url)
+    parsed = urlparse(root_url)
+    # Extract registrable domain (last 2 parts) for subdomain probing
+    host_parts = parsed.hostname.split(".") if parsed.hostname else []
+    reg_domain = ".".join(host_parts[-2:]) if len(host_parts) >= 2 else parsed.hostname or ""
+
+    # Seed sitemap list from robots.txt then well-known paths
+    seed: list[str] = []
+    robots_text = None
+    try:
+        r = await client.get(
+            f"{origin}/robots.txt",
+            headers={"User-Agent": _SITEMAP_BROWSER_UA},
+            timeout=8,
+            follow_redirects=True,
+        )
+        if r.status_code == 200:
+            robots_text = r.text
+            for line in robots_text.splitlines():
+                if line.lower().startswith("sitemap:"):
+                    sm_url = line.split(":", 1)[1].strip()
+                    if sm_url not in seed:
+                        seed.append(sm_url)
+    except Exception:
+        pass
+
+    for fallback in (f"{origin}/sitemap.xml", f"{origin}/sitemap_index.xml"):
+        if fallback not in seed:
+            seed.append(fallback)
+
+    all_urls: set[str] = set()
+    visited: set[str] = set()
+
+    async def _process_sitemap(sm_url: str, depth: int):
+        if sm_url in visited or depth > 2:
+            return
+        visited.add(sm_url)
+        xml_text = await _fetch_xml(sm_url)
+        if not xml_text:
+            return
+        page_urls, child_sms = _parse_sitemap(xml_text)
+        all_urls.update(page_urls)
+        if depth < 2 and child_sms:
+            log.emit("sitemap", f"{sm_url}: index with {len(child_sms)} entries, {len(page_urls)} URLs")
+            await asyncio.gather(*[_process_sitemap(c, depth + 1) for c in child_sms])
+        else:
+            log.emit("sitemap", f"{sm_url}: {len(page_urls)} URLs")
+
+    await asyncio.gather(*[_process_sitemap(s, 0) for s in seed])
+
+    if include_subdomains:
+        # Find subdomains already seen in discovered URLs
+        seen_hosts: set[str] = set()
+        for u in all_urls:
+            try:
+                h = urlparse(u).hostname or ""
+                if h.endswith(f".{reg_domain}") and h != parsed.hostname:
+                    seen_hosts.add(h)
+            except Exception:
+                pass
+        # Also probe common subdomains
+        for sub in _COMMON_SUBDOMAINS:
+            candidate = f"{sub}.{reg_domain}"
+            if candidate != parsed.hostname:
+                seen_hosts.add(candidate)
+
+        async def _probe_subdomain(host: str):
+            sub_origin = f"{parsed.scheme}://{host}"
+            for path in ("/robots.txt", "/sitemap.xml", "/sitemap_index.xml"):
+                sm_url = f"{sub_origin}{path}"
+                if sm_url in visited:
+                    continue
+                xml_or_robots = await _fetch_xml(sm_url)
+                if not xml_or_robots:
+                    continue
+                if path == "/robots.txt":
+                    # Extract sitemap directives
+                    for line in xml_or_robots.splitlines():
+                        if line.lower().startswith("sitemap:"):
+                            sm = line.split(":", 1)[1].strip()
+                            await _process_sitemap(sm, 1)
+                else:
+                    await _process_sitemap(sm_url, 1)
+                break  # found something for this subdomain
+
+        if seen_hosts:
+            log.emit("sitemap", f"probing {len(seen_hosts)} subdomains")
+            await asyncio.gather(*[_probe_subdomain(h) for h in seen_hosts])
+
+    return list(all_urls)
+
+
 class MapRequest(BaseModel):
     url: str = Field(..., description="Site to map")
     search: str | None = Field(None, description="Filter/rank discovered links by this term")
@@ -1269,34 +1449,90 @@ class MapRequest(BaseModel):
     timeout: int | None = Field(None, description="Upstream map timeout in ms")
 
 
-async def _run_map(req: MapRequest, log: RunLog) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "url": req.url,
-        "limit": req.limit,
-        "sitemap": req.sitemap,
-        "includeSubdomains": req.include_subdomains,
-        "ignoreQueryParameters": req.ignore_query_parameters,
-    }
-    if req.search:
-        payload["search"] = req.search
-    if req.timeout:
-        payload["timeout"] = req.timeout
-    log.emit("map", f"mapping {req.url} (sitemap={req.sitemap}, limit={req.limit})")
+async def _firecrawl_map(url: str, payload: dict[str, Any], log: RunLog) -> list[dict[str, Any]]:
+    """Call Firecrawl /v2/map and return link objects."""
     try:
         r = await client.post(f"{FIRECRAWL_URL}/v2/map", json=payload, headers=FIRECRAWL_HEADERS)
         r.raise_for_status()
     except httpx.HTTPError as e:
-        log.emit("map", f"firecrawl map error for {req.url}: {e}")
-        raise HTTPException(status_code=502, detail=f"Firecrawl map error for {req.url}: {e}") from e
+        log.emit("map", f"firecrawl map error: {e}")
+        raise
     body = r.json()
     if not body.get("success"):
-        raise HTTPException(
-            status_code=502, detail=f"Firecrawl map failed for {req.url}: {body.get('error')}"
+        raise ValueError(f"Firecrawl map failed: {body.get('error')}")
+    raw = body.get("links", [])
+    return [l if isinstance(l, dict) else {"url": l} for l in raw]
+
+
+async def _run_map(req: MapRequest, log: RunLog) -> dict[str, Any]:
+    # Firecrawl v2 uses ignoreSitemap/sitemapOnly booleans, not a "sitemap" string field
+    payload: dict[str, Any] = {
+        "url": req.url,
+        "limit": req.limit,
+        "includeSubdomains": req.include_subdomains,
+        "ignoreQueryParameters": req.ignore_query_parameters,
+    }
+    if req.sitemap == "skip":
+        payload["ignoreSitemap"] = True
+    elif req.sitemap == "only":
+        payload["sitemapOnly"] = True
+    # "include" = Firecrawl default (both flags false)
+    if req.search:
+        payload["search"] = req.search
+    if req.timeout:
+        payload["timeout"] = req.timeout
+
+    log.emit("map", f"mapping {req.url} (sitemap={req.sitemap}, limit={req.limit})")
+
+    # Run Firecrawl map and independent sitemap discovery in parallel
+    fc_task: asyncio.Task = asyncio.create_task(_firecrawl_map(req.url, payload, log))
+    sm_task: asyncio.Task | None = None
+    if req.sitemap != "skip":
+        sm_task = asyncio.create_task(
+            _discover_sitemap_urls(req.url, req.include_subdomains, log)
         )
-    # Older Firecrawl versions return bare URL strings; v2 returns objects.
-    links = [l if isinstance(l, dict) else {"url": l} for l in body.get("links", [])]
-    log.emit("map", f"discovered {len(links)} links")
-    return {"url": req.url, "link_count": len(links), "links": links}
+
+    fc_links: list[dict[str, Any]] = []
+    sm_urls: list[str] = []
+
+    try:
+        fc_links = await fc_task
+        log.emit("map", f"firecrawl: {len(fc_links)} links")
+    except Exception as e:
+        log.emit("map", f"firecrawl map failed ({e}), relying on sitemap discovery")
+
+    if sm_task is not None:
+        try:
+            sm_urls = await sm_task
+            log.emit("sitemap", f"sitemap discovery: {len(sm_urls)} URLs")
+        except Exception as e:
+            log.emit("sitemap", f"sitemap discovery error: {e}")
+
+    if not fc_links and not sm_urls:
+        raise HTTPException(status_code=502, detail=f"Map failed for {req.url}: no sources returned results")
+
+    # Merge: Firecrawl results first, then unique sitemap URLs
+    seen: set[str] = {l["url"] for l in fc_links}
+    merged = list(fc_links)
+    for u in sm_urls:
+        if u not in seen:
+            seen.add(u)
+            merged.append({"url": u})
+
+    # If ignoring query params, collapse duplicates
+    if req.ignore_query_parameters:
+        deduped: list[dict[str, Any]] = []
+        seen_stripped: set[str] = set()
+        for link in merged:
+            stripped = urlparse(link["url"])._replace(query="", fragment="").geturl()
+            if stripped not in seen_stripped:
+                seen_stripped.add(stripped)
+                deduped.append(link)
+        merged = deduped
+
+    merged = merged[: req.limit]
+    log.emit("map", f"discovered {len(merged)} links total")
+    return {"url": req.url, "link_count": len(merged), "links": merged}
 
 
 def _map_summary(result: dict[str, Any]) -> dict[str, Any]:
