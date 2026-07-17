@@ -3,11 +3,17 @@
 Endpoints:
   GET  /                    — web UI
   GET  /healthz             — liveness + upstream reachability
-  GET  /search              — web search via SearXNG; optional content enrichment via Firecrawl
+  GET  /search              — web search via SearXNG; optional content enrichment via Firecrawl,
+                              domain/date filters, optional LLM answer synthesis (OpenRouter)
   POST /search              — same, JSON body
   POST /search/stream       — same, but streams progress events (SSE) before the result
-  POST /fetch               — fetch a single URL as markdown via Firecrawl
+  POST /fetch               — fetch one URL (or a batch of up to 20) via Firecrawl;
+                              PDFs are parsed locally with pypdf
   POST /fetch/stream        — same, but streams progress events (SSE) before the result
+  POST /crawl               — crawl a site via Firecrawl (sync facade over its async job API)
+  POST /crawl/stream        — same, with SSE progress ticks while pages are crawled
+  POST /map                 — discover a site's URLs via Firecrawl map (no scraping)
+  POST /map/stream          — same, SSE
   GET  /history             — recent run history (SQLite-backed)
   GET  /history/{id}        — one run with its full event timeline + request
   DELETE /history/{id}      — delete one run
@@ -15,6 +21,7 @@ Endpoints:
 """
 
 import asyncio
+import io
 import json
 import logging
 import os
@@ -23,12 +30,15 @@ import sqlite3
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+from pypdf import PdfReader
+from pypdf.errors import PdfReadError
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
 logger = logging.getLogger("gateway")
@@ -39,7 +49,19 @@ CAMOUFOX_URL = os.environ.get("CAMOUFOX_URL", "http://localhost:3000").rstrip("/
 HISTORY_DB = os.environ.get("HISTORY_DB", str(Path(__file__).parent / "history.db"))
 STATIC_DIR = Path(__file__).parent / "static"
 
-app = FastAPI(title="local-search gateway", version="1.1.0")
+# Answer synthesis (OpenRouter or any OpenAI-compatible endpoint).
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+ANSWER_MODEL = os.environ.get("ANSWER_MODEL", "openai/gpt-4o-mini")
+ANSWER_BASE_URL = os.environ.get("ANSWER_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/")
+
+FETCH_BATCH_MAX = 20
+FETCH_BATCH_CONCURRENCY = 5  # matches camoufox MAX_CONCURRENT_PAGES
+PDF_MAX_BYTES = 20 * 1024 * 1024
+CRAWL_MAX_LIMIT = 100
+
+FIRECRAWL_HEADERS = {"Authorization": "Bearer local"}  # self-hosted: auth disabled, header ignored
+
+app = FastAPI(title="local-search gateway", version="1.2.0")
 
 
 @app.get("/")
@@ -344,10 +366,32 @@ class SearchRequest(BaseModel):
     pageno: int = Field(1, ge=1, description="Result page number (1-based)")
     safesearch: int = Field(0, ge=-1, le=2, description="Safe search level: 0 off, 1 mod, 2 strict")
     time_range: str | None = Field(None, description="Optional: 'day', 'week', 'month', or 'year'")
+    include_domains: list[str] | None = Field(
+        None, max_length=10,
+        description="Only return results whose host is (a subdomain of) one of these domains",
+    )
+    exclude_domains: list[str] | None = Field(
+        None, max_length=10, description="Drop results whose host matches any of these domains"
+    )
+    start_date: str | None = Field(
+        None, description="YYYY-MM-DD; drop results published before this (undated results are kept)"
+    )
+    end_date: str | None = Field(
+        None, description="YYYY-MM-DD; drop results published after this (undated results are kept)"
+    )
+    include_answer: bool | Literal["basic", "advanced"] = Field(
+        False,
+        description="Synthesize a cited answer from top results via LLM. true/'basic' = "
+        "titles+snippets; 'advanced' = also use scraped content when fetch_content is on",
+    )
 
 
 class FetchRequest(BaseModel):
-    url: str = Field(..., description="URL to fetch")
+    url: str | None = Field(None, description="URL to fetch (exactly one of url/urls)")
+    urls: list[str] | None = Field(
+        None, min_length=1, max_length=FETCH_BATCH_MAX,
+        description=f"Batch: up to {FETCH_BATCH_MAX} URLs fetched concurrently",
+    )
     formats: list[str] = Field(
         ["markdown"],
         description="Output formats to return. Any of: markdown, html, rawHtml, links, json "
@@ -378,29 +422,103 @@ class FetchRequest(BaseModel):
         "(slower; use for bot-protected sites)",
     )
 
+    @model_validator(mode="after")
+    def _one_of_url_urls(self):
+        if bool(self.url) == bool(self.urls):
+            raise ValueError("Provide exactly one of 'url' or 'urls'")
+        return self
+
+
+# ── Domain / date filters for search ──
+
+def _norm_domain(d: str) -> str:
+    d = d.strip().lower()
+    if "//" in d:
+        d = urlparse(d).netloc or d.split("//", 1)[1]
+    d = d.split("/", 1)[0].split(":", 1)[0]
+    for prefix in ("www.", "*."):
+        if d.startswith(prefix):
+            d = d[len(prefix):]
+    return d
+
+
+def _host_matches(url: str, domains: list[str]) -> bool:
+    host = (urlparse(url).netloc or "").lower().split(":", 1)[0]
+    if host.startswith("www."):
+        host = host[4:]
+    return any(host == d or host.endswith("." + d) for d in domains)
+
+
+def _parse_result_date(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.rstrip("Z"))
+    except ValueError:
+        return None
+
+
+def _passes_filters(
+    item: dict[str, Any],
+    include: list[str],
+    exclude: list[str],
+    start: datetime | None,
+    end: datetime | None,
+) -> bool:
+    url = item.get("url") or ""
+    if include and not _host_matches(url, include):
+        return False
+    if exclude and _host_matches(url, exclude):
+        return False
+    if start or end:
+        published = _parse_result_date(item.get("published_date"))
+        # Undated results are kept: SearXNG omits dates for most results and
+        # dropping them would empty result sets.
+        if published is not None:
+            if start and published < start:
+                return False
+            if end and published > end:
+                return False
+    return True
+
 
 async def searx_search(req: SearchRequest, log: RunLog) -> list[dict[str, Any]]:
+    include = [_norm_domain(d) for d in (req.include_domains or []) if _norm_domain(d)]
+    exclude = [_norm_domain(d) for d in (req.exclude_domains or []) if _norm_domain(d)]
+    start = _parse_result_date(req.start_date)
+    end = _parse_result_date(req.end_date)
+    filtering = bool(include or exclude or start or end)
+
+    # Query rewriting is only a recall booster (site: syntax is engine-
+    # dependent); the post-filter below is authoritative either way.
+    query = req.query
+    if include and len(include) <= 3:
+        sites = " OR ".join(f"site:{d}" for d in include)
+        query += f" ({sites})" if len(include) > 1 else f" {sites}"
+    if exclude and len(exclude) <= 3:
+        query += "".join(f" -site:{d}" for d in exclude)
+
     params = {
-        "q": req.query,
+        "q": query,
         "format": "json",
         "categories": req.categories,
         "language": req.language,
         "safesearch": str(req.safesearch),
-        "pageno": str(req.pageno),
     }
     if req.engines:
         params["engines"] = req.engines
     if req.time_range:
         params["time_range"] = req.time_range
-    log.emit("search", f"querying searxng for “{req.query}”")
-    try:
-        r = await client.get(f"{SEARXNG_URL}/search", params=params)
-        r.raise_for_status()
-    except httpx.HTTPError as e:
-        raise HTTPException(status_code=502, detail=f"SearXNG error: {e}") from e
-    results = []
-    for item in r.json().get("results", [])[: req.max_results]:
-        results.append(
+
+    async def _page(pageno: int) -> list[dict[str, Any]]:
+        try:
+            r = await client.get(
+                f"{SEARXNG_URL}/search", params={**params, "pageno": str(pageno)}
+            )
+            r.raise_for_status()
+        except httpx.HTTPError as e:
+            raise HTTPException(status_code=502, detail=f"SearXNG error: {e}") from e
+        return [
             {
                 "title": item.get("title"),
                 "url": item.get("url"),
@@ -411,9 +529,169 @@ async def searx_search(req: SearchRequest, log: RunLog) -> list[dict[str, Any]]:
                 "category": item.get("category"),
                 "published_date": item.get("publishedDate"),
             }
-        )
+            for item in r.json().get("results", [])
+        ]
+
+    log.emit("search", f"querying searxng for “{query}”")
+    kept: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+    seen_total = 0
+    # With filters active, overfetch up to 3 pages to still fill max_results.
+    for pageno in range(req.pageno, req.pageno + (3 if filtering else 1)):
+        raw = await _page(pageno)
+        seen_total += len(raw)
+        for item in raw:
+            url = item.get("url")
+            if not url or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            if _passes_filters(item, include, exclude, start, end):
+                kept.append(item)
+        if not raw or len(kept) >= req.max_results:
+            break
+    if filtering:
+        log.emit("filter", f"kept {len(kept)}/{seen_total} results after domain/date filters")
+    results = kept[: req.max_results]
     log.emit("search", f"{len(results)} results from searxng")
     return results
+
+
+def _apply_max_chars(page: dict[str, Any], max_chars: int | None) -> dict[str, Any]:
+    if max_chars and page.get("markdown") and len(page["markdown"]) > max_chars:
+        page["markdown"] = page["markdown"][:max_chars]
+        page["truncated"] = True
+        page["truncated_at"] = max_chars
+    return page
+
+
+def _normalize_fc_page(
+    data: dict[str, Any], formats: list[str], url: str | None = None
+) -> dict[str, Any]:
+    """Map a Firecrawl page payload (scrape or crawl) onto our response shape."""
+    meta = data.get("metadata", {}) or {}
+    out: dict[str, Any] = {
+        "url": url or meta.get("url") or meta.get("sourceURL"),
+        "title": meta.get("title"),
+        "description": meta.get("description"),
+        "status_code": meta.get("statusCode"),
+        "language": meta.get("language"),
+        "source_url": meta.get("sourceURL"),
+        "formats": formats,
+    }
+    # Include only the formats the caller asked for (keeps payloads small).
+    if "markdown" in formats:
+        out["markdown"] = data.get("markdown")
+    if "html" in formats:
+        out["html"] = data.get("html")
+    if "rawHtml" in formats:
+        out["raw_html"] = data.get("rawHtml")
+    if "links" in formats:
+        out["links"] = data.get("links")
+    return out
+
+
+# ── PDF extraction: self-hosted Firecrawl can't parse PDFs, so the gateway ──
+# ── downloads and parses them locally with pypdf.                          ──
+
+def _looks_like_pdf_url(url: str) -> bool:
+    return urlparse(url).path.lower().endswith(".pdf")
+
+
+def _parse_pdf(data: bytes) -> tuple[list[str], str | None]:
+    try:
+        reader = PdfReader(io.BytesIO(data))
+        if reader.is_encrypted:
+            try:
+                reader.decrypt("")
+            except Exception as e:
+                raise HTTPException(status_code=502, detail=f"PDF is encrypted: {e}") from e
+        pages = [page.extract_text() or "" for page in reader.pages]
+        title = reader.metadata.title if reader.metadata else None
+        return pages, title
+    except PdfReadError as e:
+        raise HTTPException(status_code=502, detail=f"Failed to parse PDF: {e}") from e
+
+
+async def fetch_pdf(req: FetchRequest, log: RunLog, sniff: bool = False) -> dict[str, Any] | None:
+    """Download req.url and parse it as a PDF.
+
+    With sniff=True this is a fallback probe: returns None (instead of
+    raising) when the body isn't actually a PDF or the download fails.
+    """
+    formats = list(req.formats) if req.formats else ["markdown"]
+    log.emit("pdf", f"downloading {req.url} (pdf path, {PDF_MAX_BYTES // 2**20}MB cap)")
+    buf = bytearray()
+    try:
+        # The shared client doesn't follow redirects; PDFs frequently live
+        # behind them (arxiv, DOI resolvers, signed S3 URLs).
+        async with client.stream(
+            "GET",
+            req.url,
+            follow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:130.0)"},
+        ) as r:
+            r.raise_for_status()
+            status_code = r.status_code
+            final_url = str(r.url)
+            async for chunk in r.aiter_bytes():
+                buf += chunk
+                if sniff and len(buf) >= 5 and not bytes(buf[:5]) == b"%PDF-":
+                    return None
+                if len(buf) > PDF_MAX_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"PDF exceeds {PDF_MAX_BYTES // 2**20}MB cap: {req.url}",
+                    )
+    except HTTPException:
+        raise
+    except httpx.HTTPError as e:
+        if sniff:
+            return None
+        detail = f"{type(e).__name__}: {e}".rstrip(": ")
+        raise HTTPException(
+            status_code=502, detail=f"PDF download failed for {req.url}: {detail}"
+        ) from e
+    if bytes(buf[:5]) != b"%PDF-":
+        if sniff:
+            return None
+        raise HTTPException(status_code=502, detail=f"{req.url} does not look like a PDF")
+
+    pages_text, meta_title = await asyncio.to_thread(_parse_pdf, bytes(buf))
+    log.emit("pdf", f"parsed {len(pages_text)} pages from {len(buf) // 1024} KB pdf")
+    body_md = "\n\n".join(
+        f"## Page {i}\n\n{t.strip()}" for i, t in enumerate(pages_text, 1) if t.strip()
+    )
+    out: dict[str, Any] = {
+        "url": req.url,
+        "title": meta_title or Path(urlparse(req.url).path).name or req.url,
+        "description": None,
+        "status_code": status_code,
+        "language": None,
+        "source_url": final_url,
+        "formats": formats,
+        "is_pdf": True,
+        "page_count": len(pages_text),
+    }
+    notes = []
+    if not body_md:
+        body_md = "*(no extractable text — likely a scanned/image PDF)*"
+        notes.append("no extractable text — likely a scanned/image PDF")
+    if "markdown" in formats:
+        out["markdown"] = body_md
+    if "json" in formats:
+        structure = markdown_to_structured(body_md)
+        log.emit(
+            "structure",
+            f"parsed pdf text into {_count_sections(structure['sections'])} sections",
+        )
+        out["json"] = {"title": out["title"], "url": req.url, **structure}
+    if "screenshot" in formats:
+        out["screenshot_error"] = "screenshots are not supported for PDF documents"
+    if any(f in formats for f in ("html", "rawHtml", "links")):
+        notes.append("html/rawHtml/links are not available for PDFs")
+    if notes:
+        out["pdf_note"] = "; ".join(notes)
+    return out
 
 
 async def camoufox_screenshot(
@@ -497,8 +775,11 @@ async def firecrawl_scrape(req: FetchRequest, log: RunLog) -> dict[str, Any]:
     if want_json and "markdown" not in fc_formats:
         fc_formats.append("markdown")
 
+    if _looks_like_pdf_url(req.url):
+        return await fetch_pdf(req, log)
+
     def attach_json(page: dict[str, Any]) -> dict[str, Any]:
-        if not want_json:
+        if not want_json or page.get("is_pdf"):
             return page
         structure = markdown_to_structured(page.get("markdown") or "")
         log.emit(
@@ -527,7 +808,7 @@ async def firecrawl_scrape(req: FetchRequest, log: RunLog) -> dict[str, Any]:
 
     if want_screenshot:
         page, shot = await asyncio.gather(
-            _firecrawl_request(req, fc_formats, timeout, log),
+            _scrape_with_pdf_fallback(req, fc_formats, timeout, log),
             camoufox_screenshot(req.url, req.wait_for, shot_timeout, log),
             return_exceptions=True,
         )
@@ -544,7 +825,31 @@ async def firecrawl_scrape(req: FetchRequest, log: RunLog) -> dict[str, Any]:
                 page["screenshot_note"] = shot["degraded"]
         return attach_json(page)
 
-    return attach_json(await _firecrawl_request(req, fc_formats, timeout, log))
+    return attach_json(await _scrape_with_pdf_fallback(req, fc_formats, timeout, log))
+
+
+async def _scrape_with_pdf_fallback(
+    req: FetchRequest, formats: list[str], timeout: int, log: RunLog
+) -> dict[str, Any]:
+    """Scrape via Firecrawl, falling back to local PDF parsing when the URL
+    turns out to serve a PDF (Firecrawl error, empty markdown, or an
+    application/pdf content type)."""
+    try:
+        page = await _firecrawl_request(req, formats, timeout, log)
+    except HTTPException:
+        pdf = await fetch_pdf(req, log, sniff=True)
+        if pdf is not None:
+            log.emit("pdf", f"{req.url} turned out to be a pdf — parsed locally")
+            return pdf
+        raise
+    content_type = (page.pop("_content_type", None) or "").lower()
+    empty_md = "markdown" in formats and not (page.get("markdown") or "").strip()
+    if content_type.startswith("application/pdf") or empty_md:
+        pdf = await fetch_pdf(req, log, sniff=True)
+        if pdf is not None:
+            log.emit("pdf", f"{req.url} turned out to be a pdf — parsed locally")
+            return pdf
+    return page
 
 
 async def _firecrawl_request(
@@ -578,9 +883,8 @@ async def _firecrawl_request(
         f"scraping {req.url} as {'/'.join(formats)} via firecrawl"
         + (" (camoufox stealth)" if req.stealth else ""),
     )
-    headers = {"Authorization": "Bearer local"}  # self-hosted: auth disabled, header ignored
     try:
-        r = await client.post(f"{FIRECRAWL_URL}/v2/scrape", json=payload, headers=headers)
+        r = await client.post(f"{FIRECRAWL_URL}/v2/scrape", json=payload, headers=FIRECRAWL_HEADERS)
         r.raise_for_status()
     except httpx.HTTPError as e:
         log.emit("scrape", f"firecrawl error for {req.url}: {e}")
@@ -593,25 +897,8 @@ async def _firecrawl_request(
         )
     data = body.get("data", {})
     meta = data.get("metadata", {})
-
-    out: dict[str, Any] = {
-        "url": req.url,
-        "title": meta.get("title"),
-        "description": meta.get("description"),
-        "status_code": meta.get("statusCode"),
-        "language": meta.get("language"),
-        "source_url": meta.get("sourceURL"),
-        "formats": formats,
-    }
-    # Include only the formats the caller asked for (keeps payloads small).
-    if "markdown" in formats:
-        out["markdown"] = data.get("markdown")
-    if "html" in formats:
-        out["html"] = data.get("html")
-    if "rawHtml" in formats:
-        out["raw_html"] = data.get("rawHtml")
-    if "links" in formats:
-        out["links"] = data.get("links")
+    out = _normalize_fc_page(data, formats, url=req.url)
+    out["_content_type"] = meta.get("contentType")
     md_len = len(out.get("markdown") or "")
     log.emit(
         "scrape",
@@ -697,6 +984,15 @@ def _search_summary(result: dict[str, Any]) -> dict[str, Any]:
 
 
 def _fetch_summary(page: dict[str, Any]) -> dict[str, Any]:
+    if "results" in page:  # batch
+        return {
+            "batch": True,
+            "requested": len(page.get("urls") or []),
+            "succeeded": page.get("result_count", 0),
+            "failed": page.get("failed_count", 0),
+            "markdown_chars": sum(len(p.get("markdown") or "") for p in page["results"]) or None,
+            "screenshots": sum(1 for p in page["results"] if "screenshot" in p),
+        }
     return {
         "title": page.get("title"),
         "status_code": page.get("status_code"),
@@ -815,26 +1111,60 @@ async def search_get(
     )
 
 
+async def _run_fetch_batch(req: FetchRequest, log: RunLog) -> dict[str, Any]:
+    # Screenshot batches lean on camoufox (MAX_CONCURRENT_PAGES=5, doubled
+    # under stealth), so back off the fan-out for those.
+    concurrency = 3 if "screenshot" in (req.formats or []) else FETCH_BATCH_CONCURRENCY
+    sem = asyncio.Semaphore(concurrency)
+    slots: list[dict[str, Any] | None] = [None] * len(req.urls)  # preserves input order
+    failed: list[dict[str, Any]] = []
+    log.emit("fetch", f"batch fetching {len(req.urls)} urls (concurrency {concurrency})")
+
+    async def one(i: int, u: str):
+        async with sem:
+            sub = req.model_copy(update={"url": u, "urls": None})
+            try:
+                slots[i] = _apply_max_chars(await firecrawl_scrape(sub, log), req.max_chars)
+            except HTTPException as e:
+                failed.append({"url": u, "error": str(e.detail)})
+                log.emit("fetch", f"failed {u}: {e.detail}")
+            except Exception as e:
+                failed.append({"url": u, "error": str(e)})
+                log.emit("fetch", f"failed {u}: {e}")
+
+    await asyncio.gather(*(one(i, u) for i, u in enumerate(req.urls)))
+    results = [p for p in slots if p is not None]
+    return {
+        "urls": req.urls,
+        "result_count": len(results),
+        "failed_count": len(failed),
+        "results": results,
+        "failed_results": failed,
+    }
+
+
 async def _run_fetch(req: FetchRequest, log: RunLog) -> dict[str, Any]:
-    page = await firecrawl_scrape(req, log)
-    if req.max_chars and page.get("markdown"):
-        if len(page["markdown"]) > req.max_chars:
-            page["markdown"] = page["markdown"][: req.max_chars]
-            page["truncated"] = True
-            page["truncated_at"] = req.max_chars
-    return page
+    if req.urls:
+        return await _run_fetch_batch(req, log)
+    return _apply_max_chars(await firecrawl_scrape(req, log), req.max_chars)
+
+
+def _fetch_label(req: FetchRequest) -> str:
+    return req.url or f"batch: {len(req.urls)} urls"
 
 
 @app.post("/fetch")
 async def fetch(req: FetchRequest):
-    log = RunLog("fetch", req.url)
+    label = _fetch_label(req)
+    log = RunLog("fetch", label)
     return await _run_recorded(
-        "fetch", req.url, req.model_dump(), lambda l: _run_fetch(req, l), _fetch_summary, log
+        "fetch", label, req.model_dump(), lambda l: _run_fetch(req, l), _fetch_summary, log
     )
 
 
 @app.post("/fetch/stream")
 async def fetch_stream(req: FetchRequest):
+    label = _fetch_label(req)
     return _stream_response(
-        "fetch", req.url, req.model_dump(), lambda l: _run_fetch(req, l), _fetch_summary
+        "fetch", label, req.model_dump(), lambda l: _run_fetch(req, l), _fetch_summary
     )
