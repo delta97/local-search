@@ -51,6 +51,24 @@ services:
     restart: unless-stopped
     logging: *logging
 
+  # ── Botasaurus: anti-detect Chrome browser engine (alternative to camoufox) ──
+  # Profile-gated: only runs with COMPOSE_PROFILES=botasaurus. To make it the
+  # active engine, also set in .env:
+  #   PLAYWRIGHT_MICROSERVICE_URL=http://botasaurus:3000/scrape
+  #   BROWSER_URL=http://botasaurus:3000
+  botasaurus:
+    build: ./botasaurus
+    profiles: ["botasaurus"]
+    environment:
+      BOTASAURUS_HEADLESS: virtual   # Xvfb-backed headed Chrome (stealthier than true headless)
+      MAX_CONCURRENT_PAGES: 3        # each is a full Chrome process; raising it needs more memory
+    networks:
+      - backend
+    cpus: 2.0
+    mem_limit: 3G
+    restart: unless-stopped
+    logging: *logging
+
   # ── Firecrawl stack: scraping / markdown extraction ──
   playwright-service:
     image: ghcr.io/firecrawl/playwright-service:latest
@@ -146,7 +164,9 @@ services:
     environment:
       SEARXNG_URL: http://searxng:8080
       FIRECRAWL_URL: http://api:3002
-      CAMOUFOX_URL: http://camoufox:3000
+      # Direct-browser service (screenshots, health). Point at botasaurus
+      # via .env to switch engines (see the botasaurus service above).
+      BROWSER_URL: ${BROWSER_URL:-http://camoufox:3000}
       HISTORY_DB: /data/history.db
       # Answer synthesis (optional) — set these in a local .env file
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}

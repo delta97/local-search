@@ -46,7 +46,11 @@ logger = logging.getLogger("gateway")
 
 SEARXNG_URL = os.environ.get("SEARXNG_URL", "http://localhost:8888").rstrip("/")
 FIRECRAWL_URL = os.environ.get("FIRECRAWL_URL", "http://localhost:3002").rstrip("/")
-CAMOUFOX_URL = os.environ.get("CAMOUFOX_URL", "http://localhost:3000").rstrip("/")
+# Direct-browser service (camoufox or botasaurus — same HTTP contract).
+# CAMOUFOX_URL kept as a fallback for older deployments.
+BROWSER_URL = (
+    os.environ.get("BROWSER_URL") or os.environ.get("CAMOUFOX_URL") or "http://localhost:3000"
+).rstrip("/")
 HISTORY_DB = os.environ.get("HISTORY_DB", str(Path(__file__).parent / "history.db"))
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -56,7 +60,7 @@ ANSWER_MODEL = os.environ.get("ANSWER_MODEL", "openai/gpt-4o-mini")
 ANSWER_BASE_URL = os.environ.get("ANSWER_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/")
 
 FETCH_BATCH_MAX = 20
-FETCH_BATCH_CONCURRENCY = 5  # matches camoufox MAX_CONCURRENT_PAGES
+FETCH_BATCH_CONCURRENCY = 5  # matches camoufox MAX_CONCURRENT_PAGES (botasaurus defaults to 3)
 PDF_MAX_BYTES = 20 * 1024 * 1024
 CRAWL_MAX_LIMIT = 100
 
@@ -701,9 +705,9 @@ async def camoufox_screenshot(
     payload: dict[str, Any] = {"url": url, "timeout": timeout, "full_page": True}
     if wait_for:
         payload["wait_after_load"] = wait_for
-    # Camoufox's worst case is goto(timeout) + capture(timeout) + viewport
-    # fallback; the global 90s client timeout would abandon requests camoufox
-    # is still legitimately working on. Budget the call from the payload.
+    # The browser service's worst case is goto(timeout) + capture(timeout) +
+    # viewport fallback; the global 90s client timeout would abandon requests
+    # it is still legitimately working on. Budget the call from the payload.
     call_timeout = httpx.Timeout(timeout / 1000 * 2 + 45, connect=10.0)
     # Navigation time varies a lot on throttled/heavy sites; one retry
     # absorbs most transient goto timeouts.
@@ -711,21 +715,21 @@ async def camoufox_screenshot(
     for attempt in range(1, 3):
         log.emit(
             "screenshot",
-            f"rendering full-page screenshot of {url} via camoufox"
+            f"rendering full-page screenshot of {url} via {BROWSER_URL}"
             + (f" (retry {attempt - 1})" if attempt > 1 else ""),
         )
         try:
-            r = await client.post(f"{CAMOUFOX_URL}/screenshot", json=payload, timeout=call_timeout)
+            r = await client.post(f"{BROWSER_URL}/screenshot", json=payload, timeout=call_timeout)
             r.raise_for_status()
         except httpx.HTTPStatusError as e:
-            # Surface camoufox's own error message, not just the status line.
+            # Surface the browser service's own error message, not just the status line.
             try:
                 detail = e.response.json().get("error") or e.response.text[:300]
             except Exception:
                 detail = e.response.text[:300] or str(e)
             log.emit("screenshot", f"attempt {attempt} failed: {detail}")
             last_exc = HTTPException(
-                status_code=502, detail=f"Camoufox screenshot failed for {url}: {detail}"
+                status_code=502, detail=f"Browser screenshot failed for {url}: {detail}"
             )
             continue
         except httpx.HTTPError as e:
@@ -733,7 +737,7 @@ async def camoufox_screenshot(
             detail = f"{type(e).__name__}: {e}".rstrip(": ")
             log.emit("screenshot", f"attempt {attempt} failed: {detail}")
             last_exc = HTTPException(
-                status_code=502, detail=f"Camoufox screenshot error for {url}: {detail}"
+                status_code=502, detail=f"Browser screenshot error for {url}: {detail}"
             )
             continue
         body = r.json()
@@ -745,12 +749,12 @@ async def camoufox_screenshot(
             )
             return body
         last_exc = HTTPException(
-            status_code=502, detail=f"Camoufox returned no screenshot for {url}"
+            status_code=502, detail=f"Browser service returned no screenshot for {url}"
         )
     if isinstance(last_exc, HTTPException):
         raise last_exc
     raise HTTPException(
-        status_code=502, detail=f"Camoufox screenshot error for {url}: {last_exc}"
+        status_code=502, detail=f"Browser screenshot error for {url}: {last_exc}"
     ) from last_exc
 
 
@@ -924,10 +928,12 @@ async def healthz():
     except Exception as e:
         status["firecrawl"] = f"unreachable: {e}"
     try:
-        r = await client.get(f"{CAMOUFOX_URL}/health", timeout=10)
-        status["camoufox"] = "ok" if r.status_code == 200 else f"http {r.status_code}"
+        r = await client.get(f"{BROWSER_URL}/health", timeout=10)
+        status["browser"] = (
+            f"ok ({BROWSER_URL})" if r.status_code == 200 else f"http {r.status_code} ({BROWSER_URL})"
+        )
     except Exception as e:
-        status["camoufox"] = f"unreachable: {e}"
+        status["browser"] = f"unreachable ({BROWSER_URL}): {e}"
     return status
 
 
