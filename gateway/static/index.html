@@ -203,7 +203,29 @@
       </div>
       <div class="opts">
         <label class="opt"><input type="checkbox" id="mainOnly" checked /> main content only</label>
-        <label class="opt"><input type="checkbox" id="stealth" /> stealth mode (camoufox anti-detect)</label>
+        <label class="opt"><input type="checkbox" id="stealth" /> stealth (camoufox anti-detect)</label>
+        <div class="opt"><label for="waitFor" style="text-transform:none;letter-spacing:0">wait (ms)</label>
+          <input class="mini" type="number" id="waitFor" value="0" min="0" step="100" /></div>
+        <div class="opt"><label for="location" style="text-transform:none;letter-spacing:0">country</label>
+          <input class="mini" type="text" id="location" placeholder="US" maxlength="3" style="width:64px" /></div>
+      </div>
+      <div class="opts">
+        <span class="opt" style="color:var(--muted);font-size:11px;letter-spacing:.09em;text-transform:uppercase">formats</span>
+        <label class="opt"><input type="checkbox" class="fmt" value="markdown" checked /> markdown</label>
+        <label class="opt"><input type="checkbox" class="fmt" value="html" /> html</label>
+        <label class="opt"><input type="checkbox" class="fmt" value="rawHtml" /> raw html</label>
+        <label class="opt"><input type="checkbox" class="fmt" value="links" /> links</label>
+        <label class="opt"><input type="checkbox" class="fmt" value="screenshot" /> screenshot</label>
+      </div>
+      <div class="opts">
+        <div class="opt" style="flex:1">
+          <label for="includeTags" style="text-transform:none;letter-spacing:0">include tags (css, comma-sep)</label>
+          <input type="text" id="includeTags" placeholder="article, main" style="min-width:200px" />
+        </div>
+        <div class="opt" style="flex:1">
+          <label for="excludeTags" style="text-transform:none;letter-spacing:0">exclude tags (css, comma-sep)</label>
+          <input type="text" id="excludeTags" placeholder="nav, footer, .ads" style="min-width:200px" />
+        </div>
       </div>
     </form>
     <div class="status" id="fetchStatus"></div>
@@ -294,18 +316,41 @@ $("#fetchForm").onsubmit = async e => {
   const btn = e.target.querySelector("button"); btn.disabled = true;
   $("#fetchResult").innerHTML = "";
   const stealth = $("#stealth").checked;
+  const formats = [...document.querySelectorAll(".fmt:checked")].map(c => c.value);
+  const waitFor = +$("#waitFor").value || 0;
+  const location = $("#location").value.trim() || null;
+  const includeTags = $("#includeTags").value.trim() ? $("#includeTags").value.split(",").map(s=>s.trim()).filter(Boolean) : null;
+  const excludeTags = $("#excludeTags").value.trim() ? $("#excludeTags").value.split(",").map(s=>s.trim()).filter(Boolean) : null;
   $("#fetchStatus").innerHTML = `<span class="spin">${SPIN_SVG} fetching via firecrawl${stealth?" + camoufox stealth (slower)":""}…</span>`;
   try {
-    const body = { url, only_main_content: $("#mainOnly").checked, stealth };
+    const body = { url, formats, only_main_content: $("#mainOnly").checked, stealth };
+    if (waitFor) body.wait_for = waitFor;
+    if (location) body.location = location;
+    if (includeTags) body.include_tags = includeTags;
+    if (excludeTags) body.exclude_tags = excludeTags;
     const r = await fetch("/fetch", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) });
     if (!r.ok) throw new Error(await r.text());
     const d = await r.json();
-    $("#fetchStatus").innerHTML = `HTTP ${d.status_code ?? "?"} · ${(d.markdown||"").length.toLocaleString()} chars${d.truncated?" (truncated)":""}`;
+    const mdLen = (d.markdown||"").length;
+    const fmtList = (d.formats||["markdown"]).join(", ");
+    $("#fetchStatus").innerHTML = `HTTP ${d.status_code ?? "?"} · formats: ${esc(fmtList)}${mdLen?` · ${mdLen.toLocaleString()} chars markdown`:''}${d.truncated?` (truncated @ ${d.truncated_at})`:''}`;
+
+    const bits = [];
+    if (stealth) bits.push('<span class="badge">stealth</span>');
+    bits.push(`<span class="badge">fmt: ${esc(fmtList)}</span>`);
+    if (location) bits.push(`<span class="badge">geo: ${esc(location)}</span>`);
     $("#fetchResult").innerHTML = `<div class="head">
         <div><h2>${esc(d.title)||"(untitled)"}</h2><div class="u">${esc(d.url)}</div></div>
-        ${stealth?'<span class="badge">stealth</span>':''}</div>
+        ${bits.join("")}</div>
       ${d.description?`<p class="snippet" style="margin:0 0 14px;color:var(--muted)">${esc(d.description)}</p>`:""}
-      <div class="md">${mdToHtml(d.markdown)}</div>`;
+      <div class="md">${d.markdown ? mdToHtml(d.markdown) : "<em>no markdown requested</em>"}</div>`;
+
+    const extras = [];
+    if (d.screenshot) extras.push(`<details><summary>screenshot</summary><img src="data:image/png;base64,${d.screenshot}" alt="screenshot" style="max-width:100%;border-radius:6px" /></details>`);
+    if (d.links && d.links.length) extras.push(`<details><summary>links (${d.links.length})</summary><ul>${d.links.map(l=>`<li><a href="${esc(l)}" target="_blank" rel="noopener">${esc(l)}</a></li>`).join("")}</ul></details>`);
+    if (d.html) extras.push(`<details><summary>html</summary><pre><code>${esc(d.html)}</code></pre></details>`);
+    if (d.raw_html) extras.push(`<details><summary>raw html</summary><pre><code>${esc(d.raw_html)}</code></pre></details>`);
+    if (extras.length) $("#fetchResult").innerHTML += `<div style="margin-top:14px">${extras.join("")}</div>`;
   } catch (err) {
     $("#fetchStatus").innerHTML = `<span class="err">error: ${esc(String(err.message||err))}</span>`;
   } finally { btn.disabled = false; }
