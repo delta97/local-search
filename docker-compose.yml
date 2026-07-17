@@ -1,0 +1,162 @@
+name: local-search
+
+x-firecrawl-env: &firecrawl-env
+  REDIS_URL: redis://redis:6379
+  REDIS_RATE_LIMIT_URL: redis://redis:6379
+  # Browser rendering engine: camoufox (anti-detect Firefox) by default.
+  # Set PLAYWRIGHT_MICROSERVICE_URL=http://playwright-service:3000/scrape to use stock Playwright/Chromium.
+  PLAYWRIGHT_MICROSERVICE_URL: ${PLAYWRIGHT_MICROSERVICE_URL:-http://camoufox:3000/scrape}
+  POSTGRES_USER: postgres
+  POSTGRES_PASSWORD: postgres
+  POSTGRES_DB: postgres
+  POSTGRES_HOST: nuq-postgres
+  POSTGRES_PORT: 5432
+  USE_DB_AUTHENTICATION: "false"
+  NUM_WORKERS_PER_QUEUE: 8
+  CRAWL_CONCURRENT_REQUESTS: 10
+  MAX_CONCURRENT_JOBS: 5
+  BROWSER_POOL_SIZE: 5
+  SEARXNG_ENDPOINT: http://searxng:8080
+  LOGGING_LEVEL: info
+
+services:
+  # ── SearXNG: metasearch engine (Google/Bing/DDG/etc aggregation) ──
+  searxng:
+    image: searxng/searxng:latest
+    ports:
+      - "8888:8080"
+    volumes:
+      - ./searxng:/etc/searxng:ro
+    environment:
+      SEARXNG_BASE_URL: http://localhost:8888/
+    networks:
+      - backend
+    restart: unless-stopped
+    logging: &logging
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ── Camoufox: anti-detect Firefox browser engine (stealth rendering) ──
+  camoufox:
+    build: ./camoufox
+    environment:
+      CAMOUFOX_HEADLESS: virtual   # Xvfb-backed headless (stealthier than true headless)
+      MAX_CONCURRENT_PAGES: 5
+    networks:
+      - backend
+    cpus: 2.0
+    mem_limit: 2G
+    restart: unless-stopped
+    logging: *logging
+
+  # ── Firecrawl stack: scraping / markdown extraction ──
+  playwright-service:
+    image: ghcr.io/firecrawl/playwright-service:latest
+    environment:
+      PORT: 3000
+      BLOCK_MEDIA: "true"
+      MAX_CONCURRENT_PAGES: 10
+    networks:
+      - backend
+    cpus: 2.0
+    mem_limit: 2G
+    tmpfs:
+      - /tmp/.cache:noexec,nosuid,size=1g
+    restart: unless-stopped
+    logging: *logging
+
+  api:
+    image: ghcr.io/firecrawl/firecrawl:latest
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    environment:
+      <<: *firecrawl-env
+      HOST: "0.0.0.0"
+      PORT: 3002
+      EXTRACT_WORKER_PORT: 3004
+      WORKER_PORT: 3005
+      NUQ_RABBITMQ_URL: amqp://rabbitmq:5672
+      HARNESS_STARTUP_TIMEOUT_MS: 120000
+      ENV: local
+    depends_on:
+      redis:
+        condition: service_started
+      playwright-service:
+        condition: service_started
+      camoufox:
+        condition: service_started
+      nuq-postgres:
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy
+    ports:
+      - "3002:3002"
+    command: node dist/src/harness.js --start-docker
+    networks:
+      - backend
+    cpus: 4.0
+    mem_limit: 4G
+    restart: unless-stopped
+    logging: *logging
+
+  redis:
+    image: redis:alpine
+    command: redis-server --bind 0.0.0.0
+    networks:
+      - backend
+    restart: unless-stopped
+    logging: *logging
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    command: rabbitmq-server
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+      interval: 5s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    networks:
+      - backend
+    restart: unless-stopped
+    logging: *logging
+
+  nuq-postgres:
+    image: ghcr.io/firecrawl/nuq-postgres:latest
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    volumes:
+      - nuq-postgres-data:/var/lib/postgresql/data
+    networks:
+      - backend
+    restart: unless-stopped
+    logging: *logging
+
+  # ── Gateway: the LLM-facing API (search + fetch) ──
+  gateway:
+    build: ./gateway
+    ports:
+      - "8088:8000"
+    environment:
+      SEARXNG_URL: http://searxng:8080
+      FIRECRAWL_URL: http://api:3002
+    depends_on:
+      - searxng
+      - api
+    networks:
+      - backend
+    restart: unless-stopped
+    logging: *logging
+
+networks:
+  backend:
+    driver: bridge
+
+volumes:
+  nuq-postgres-data:

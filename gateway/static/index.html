@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>local-search · console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Fraunces:opsz,wght@9..144,500;9..144,600&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg: #0e1512;
+    --panel: #141d19;
+    --panel-2: #18231e;
+    --ink: #e8f0ea;
+    --muted: #7f948a;
+    --line: #263630;
+    --amber: #f5b843;
+    --amber-dim: #b9862a;
+    --green: #56d99a;
+    --red: #e8705a;
+    --shadow: 0 24px 60px -20px rgba(0,0,0,.7);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background:
+      radial-gradient(1200px 600px at 80% -10%, rgba(245,184,67,.07), transparent 60%),
+      radial-gradient(900px 500px at -10% 110%, rgba(86,217,154,.06), transparent 55%),
+      var(--bg);
+    color: var(--ink);
+    font-family: "Space Mono", ui-monospace, monospace;
+    min-height: 100vh;
+    line-height: 1.5;
+  }
+  body::before {
+    content: "";
+    position: fixed; inset: 0; pointer-events: none; z-index: 0;
+    background-image: repeating-linear-gradient(0deg, rgba(255,255,255,.014) 0 1px, transparent 1px 3px);
+    opacity: .5;
+  }
+  .wrap { position: relative; z-index: 1; max-width: 1080px; margin: 0 auto; padding: 40px 24px 80px; }
+
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 20px; flex-wrap: wrap; border-bottom: 1px solid var(--line); padding-bottom: 20px; }
+  .brand { display: flex; align-items: baseline; gap: 14px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--green); box-shadow: 0 0 12px var(--green); align-self: center; animation: pulse 2.4s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
+  h1 { font-family: "Fraunces", Georgia, serif; font-weight: 600; font-size: 30px; margin: 0; letter-spacing: -.5px; }
+  h1 em { font-style: italic; color: var(--amber); }
+  .sub { color: var(--muted); font-size: 12.5px; letter-spacing: .04em; }
+  #health { font-size: 12px; color: var(--muted); display: flex; gap: 14px; }
+  #health b { font-weight: 400; }
+  #health .ok { color: var(--green); }
+  #health .bad { color: var(--red); }
+
+  .tabs { display: flex; gap: 6px; margin: 28px 0 0; }
+  .tab {
+    font-family: inherit; font-size: 13px; letter-spacing: .05em; text-transform: uppercase;
+    background: transparent; color: var(--muted); border: 1px solid transparent; border-bottom: none;
+    padding: 12px 20px; cursor: pointer; border-radius: 8px 8px 0 0; transition: .18s;
+  }
+  .tab:hover { color: var(--ink); }
+  .tab.active { color: var(--amber); background: var(--panel); border-color: var(--line); }
+
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 0 12px 12px 12px; box-shadow: var(--shadow); padding: 26px; }
+  .panel[hidden] { display: none; }
+
+  form { display: grid; gap: 16px; }
+  .row { display: flex; gap: 12px; align-items: stretch; }
+  .field { display: grid; gap: 7px; }
+  label { font-size: 11px; letter-spacing: .09em; text-transform: uppercase; color: var(--muted); }
+  input[type=text], input[type=url], input[type=number], select {
+    font-family: inherit; font-size: 15px; color: var(--ink);
+    background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 13px 15px; width: 100%;
+    transition: border-color .15s, box-shadow .15s;
+  }
+  input:focus, select:focus { outline: none; border-color: var(--amber-dim); box-shadow: 0 0 0 3px rgba(245,184,67,.12); }
+  ::placeholder { color: #52655c; }
+
+  .opts { display: flex; gap: 22px; flex-wrap: wrap; align-items: center; }
+  .opt { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+  .opt input { accent-color: var(--amber); width: 16px; height: 16px; }
+  .mini { width: 92px !important; }
+
+  button.go {
+    font-family: inherit; font-weight: 700; font-size: 14px; letter-spacing: .06em; text-transform: uppercase;
+    color: #10160f; background: var(--amber); border: none; border-radius: 8px; padding: 0 26px; cursor: pointer;
+    white-space: nowrap; transition: transform .1s, background .15s;
+  }
+  button.go:hover { background: #ffca5c; }
+  button.go:active { transform: translateY(1px); }
+  button.go:disabled { background: var(--amber-dim); cursor: wait; opacity: .7; }
+
+  .status { min-height: 20px; margin-top: 20px; font-size: 13px; color: var(--muted); }
+  .status .spin { color: var(--amber); }
+  .status .err { color: var(--red); }
+
+  .results { margin-top: 8px; display: grid; gap: 14px; }
+  .card {
+    background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px;
+    animation: rise .35s ease both;
+  }
+  @keyframes rise { from { opacity: 0; transform: translateY(8px); } }
+  .card .rank { color: var(--amber-dim); font-size: 12px; }
+  .card a.title { color: var(--ink); font-family: "Fraunces", serif; font-size: 18px; text-decoration: none; font-weight: 600; }
+  .card a.title:hover { color: var(--amber); }
+  .card .url { color: var(--green); font-size: 12px; word-break: break-all; margin: 4px 0 8px; opacity: .85; }
+  .card .snippet { color: #b9c7bf; font-size: 13.5px; }
+  .card .meta { margin-top: 10px; font-size: 11px; color: var(--muted); display: flex; gap: 14px; flex-wrap: wrap; }
+  .card .content {
+    margin-top: 12px; border-top: 1px dashed var(--line); padding-top: 12px;
+    font-size: 12.5px; color: #9fb0a7; white-space: pre-wrap; max-height: 240px; overflow: auto;
+  }
+  .card details summary { cursor: pointer; color: var(--amber-dim); font-size: 12px; margin-top: 10px; }
+
+  .doc { margin-top: 8px; }
+  .doc .head { display: flex; justify-content: space-between; gap: 16px; align-items: baseline; flex-wrap: wrap; margin-bottom: 14px; }
+  .doc h2 { font-family: "Fraunces", serif; font-weight: 600; font-size: 24px; margin: 0; }
+  .doc .u { color: var(--green); font-size: 12px; }
+  .md {
+    background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 22px 26px;
+    max-height: 62vh; overflow: auto; font-size: 14px; line-height: 1.7; color: #cdd9d2;
+    animation: rise .35s ease both;
+  }
+  .md h1, .md h2, .md h3 { font-family: "Fraunces", serif; color: var(--ink); line-height: 1.25; }
+  .md a { color: var(--amber); }
+  .md code { background: #0c110f; padding: 2px 6px; border-radius: 4px; font-size: 12.5px; }
+  .md pre { background: #0c110f; padding: 14px; border-radius: 8px; overflow: auto; }
+  .md img { max-width: 100%; border-radius: 6px; }
+  .md blockquote { border-left: 2px solid var(--amber-dim); margin: 0; padding-left: 14px; color: var(--muted); }
+  .md table { border-collapse: collapse; }
+  .md td, .md th { border: 1px solid var(--line); padding: 6px 10px; }
+  .badge { font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--amber); border: 1px solid var(--amber-dim); border-radius: 20px; padding: 3px 10px; }
+  footer { margin-top: 40px; color: var(--muted); font-size: 11.5px; text-align: center; letter-spacing: .04em; }
+  footer code { color: var(--green); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand">
+      <span class="dot"></span>
+      <div>
+        <h1>local·<em>search</em></h1>
+        <div class="sub">self-hosted searxng + firecrawl + camoufox</div>
+      </div>
+    </div>
+    <div id="health">checking upstreams…</div>
+  </header>
+
+  <div class="tabs">
+    <button class="tab active" data-tab="search">▸ Search</button>
+    <button class="tab" data-tab="fetch">▸ Fetch page</button>
+  </div>
+
+  <!-- SEARCH -->
+  <section class="panel" id="panel-search">
+    <form id="searchForm">
+      <div class="row">
+        <div class="field" style="flex:1">
+          <label for="q">query</label>
+          <input type="text" id="q" placeholder="e.g. self-hosted vector database comparison" autofocus />
+        </div>
+        <div class="field" style="align-self:end">
+          <button class="go" type="submit">Search</button>
+        </div>
+      </div>
+      <div class="opts">
+        <div class="opt"><label for="max" style="text-transform:none;letter-spacing:0">results</label>
+          <input class="mini" type="number" id="max" value="8" min="1" max="30" /></div>
+        <div class="opt"><label for="time" style="text-transform:none;letter-spacing:0">time</label>
+          <select id="time" style="width:120px">
+            <option value="">any</option><option value="day">day</option>
+            <option value="week">week</option><option value="month">month</option><option value="year">year</option>
+          </select></div>
+        <label class="opt"><input type="checkbox" id="fetchContent" /> scrape top results into markdown</label>
+        <div class="opt"><label for="fetchTop" style="text-transform:none;letter-spacing:0">top</label>
+          <input class="mini" type="number" id="fetchTop" value="3" min="1" max="10" /></div>
+      </div>
+    </form>
+    <div class="status" id="searchStatus"></div>
+    <div class="results" id="searchResults"></div>
+  </section>
+
+  <!-- FETCH -->
+  <section class="panel" id="panel-fetch" hidden>
+    <form id="fetchForm">
+      <div class="row">
+        <div class="field" style="flex:1">
+          <label for="url">url</label>
+          <input type="url" id="url" placeholder="https://example.com/article" />
+        </div>
+        <div class="field" style="align-self:end">
+          <button class="go" type="submit">Fetch</button>
+        </div>
+      </div>
+      <div class="opts">
+        <label class="opt"><input type="checkbox" id="mainOnly" checked /> main content only</label>
+        <label class="opt"><input type="checkbox" id="stealth" /> stealth mode (camoufox anti-detect)</label>
+      </div>
+    </form>
+    <div class="status" id="fetchStatus"></div>
+    <div class="doc" id="fetchResult"></div>
+  </section>
+
+  <footer>gateway <code>:8088</code> · api <code>/search</code> <code>/fetch</code> · mcp tools <code>web_search</code> <code>fetch_page</code></footer>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => (s ?? "").replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+// tabs
+document.querySelectorAll(".tab").forEach(t => t.onclick = () => {
+  document.querySelectorAll(".tab").forEach(x => x.classList.remove("active"));
+  t.classList.add("active");
+  const tab = t.dataset.tab;
+  $("#panel-search").hidden = tab !== "search";
+  $("#panel-fetch").hidden = tab !== "fetch";
+});
+
+// health
+(async () => {
+  try {
+    const h = await (await fetch("/healthz")).json();
+    $("#health").innerHTML = Object.entries(h).map(([k,v]) =>
+      `<b>${k}</b> <span class="${String(v).startsWith('ok')?'ok':'bad'}">${esc(String(v))}</span>`).join("");
+  } catch { $("#health").innerHTML = '<span class="bad">gateway unreachable</span>'; }
+})();
+
+// minimal markdown → html
+function mdToHtml(md) {
+  if (!md) return "<em>empty document</em>";
+  let h = esc(md);
+  h = h.replace(/```([\s\S]*?)```/g, (_, c) => `<pre><code>${c}</code></pre>`);
+  h = h.replace(/`([^`]+)`/g, "<code>$1</code>");
+  h = h.replace(/^###### (.*)$/gm, "<h6>$1</h6>").replace(/^##### (.*)$/gm, "<h5>$1</h5>")
+       .replace(/^#### (.*)$/gm, "<h4>$1</h4>").replace(/^### (.*)$/gm, "<h3>$1</h3>")
+       .replace(/^## (.*)$/gm, "<h2>$1</h2>").replace(/^# (.*)$/gm, "<h1>$1</h1>");
+  h = h.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img alt="$1" src="$2" />');
+  h = h.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  h = h.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  h = h.replace(/^> (.*)$/gm, "<blockquote>$1</blockquote>");
+  h = h.replace(/^\s*[-*] (.*)$/gm, "<li>$1</li>").replace(/(<li>[\s\S]*?<\/li>)/g, "<ul>$1</ul>");
+  h = h.split(/\n{2,}/).map(b => /^\s*<(h\d|ul|pre|blockquote|img|table)/.test(b.trim()) ? b : `<p>${b.replace(/\n/g,"<br>")}</p>`).join("\n");
+  return h;
+}
+
+// search
+$("#searchForm").onsubmit = async e => {
+  e.preventDefault();
+  const q = $("#q").value.trim(); if (!q) return;
+  const btn = e.target.querySelector("button"); btn.disabled = true;
+  $("#searchResults").innerHTML = "";
+  const enrich = $("#fetchContent").checked;
+  $("#searchStatus").innerHTML = `<span class="spin">▸ querying searxng${enrich ? " + scraping top results" : ""}…</span>`;
+  try {
+    const body = { query: q, max_results: +$("#max").value, fetch_content: enrich,
+                   fetch_top: +$("#fetchTop").value, time_range: $("#time").value || null };
+    const r = await fetch("/search", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) });
+    if (!r.ok) throw new Error(await r.text());
+    const d = await r.json();
+    $("#searchStatus").innerHTML = `${d.result_count} result${d.result_count===1?"":"s"} for “${esc(q)}”`;
+    $("#searchResults").innerHTML = d.results.map((x,i) => {
+      const content = x.content ? `<details><summary>show scraped content</summary><div class="content">${esc(x.content)}</div></details>`
+        : x.content_error ? `<div class="meta"><span class="err">scrape failed: ${esc(String(x.content_error))}</span></div>` : "";
+      const scraped = x.content ? '<span class="badge">scraped</span>' : "";
+      return `<div class="card" style="animation-delay:${i*40}ms">
+        <div class="rank">${String(i+1).padStart(2,"0")}</div>
+        <a class="title" href="${esc(x.url)}" target="_blank" rel="noopener">${esc(x.title)||"(untitled)"}</a> ${scraped}
+        <div class="url">${esc(x.url)}</div>
+        <div class="snippet">${esc(x.snippet)||""}</div>
+        <div class="meta">${x.engine?`engine: ${esc(x.engine)}`:""}${x.score?` · score: ${(+x.score).toFixed(1)}`:""}${x.published_date?` · ${esc(x.published_date)}`:""}</div>
+        ${content}</div>`;
+    }).join("") || '<div class="status">no results.</div>';
+  } catch (err) {
+    $("#searchStatus").innerHTML = `<span class="err">error: ${esc(String(err.message||err))}</span>`;
+  } finally { btn.disabled = false; }
+};
+
+// fetch
+$("#fetchForm").onsubmit = async e => {
+  e.preventDefault();
+  const url = $("#url").value.trim(); if (!url) return;
+  const btn = e.target.querySelector("button"); btn.disabled = true;
+  $("#fetchResult").innerHTML = "";
+  const stealth = $("#stealth").checked;
+  $("#fetchStatus").innerHTML = `<span class="spin">▸ fetching via firecrawl${stealth?" + camoufox stealth (slower)":""}…</span>`;
+  try {
+    const body = { url, only_main_content: $("#mainOnly").checked, stealth };
+    const r = await fetch("/fetch", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) });
+    if (!r.ok) throw new Error(await r.text());
+    const d = await r.json();
+    $("#fetchStatus").innerHTML = `HTTP ${d.status_code ?? "?"} · ${(d.markdown||"").length.toLocaleString()} chars${d.truncated?" (truncated)":""}`;
+    $("#fetchResult").innerHTML = `<div class="head">
+        <div><h2>${esc(d.title)||"(untitled)"}</h2><div class="u">${esc(d.url)}</div></div>
+        ${stealth?'<span class="badge">stealth</span>':''}</div>
+      ${d.description?`<p class="snippet" style="margin:0 0 14px;color:var(--muted)">${esc(d.description)}</p>`:""}
+      <div class="md">${mdToHtml(d.markdown)}</div>`;
+  } catch (err) {
+    $("#fetchStatus").innerHTML = `<span class="err">error: ${esc(String(err.message||err))}</span>`;
+  } finally { btn.disabled = false; }
+};
+</script>
+</body>
+</html>

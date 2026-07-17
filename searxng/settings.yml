@@ -1,0 +1,19 @@
+# SearXNG configuration for the local-search pipeline.
+# Inherits all defaults; only overrides what the API pipeline needs.
+use_default_settings: true
+
+server:
+  secret_key: "b9da479fbae582b05e550017867a9cf56f178d43768ce09ffa7d681a4aeb2c2d"
+  limiter: false          # local/private instance — no bot rate limiting
+  image_proxy: false
+
+search:
+  # 'json' must be enabled for the API (format=json) to work
+  formats:
+    - html
+    - json
+  safe_search: 0
+  autocomplete: ""
+
+ui:
+  static_use_hash: true
