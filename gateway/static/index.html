@@ -227,6 +227,69 @@
   .tab .icon { width: 12px; height: 12px; vertical-align: -1px; }
   @keyframes spin-anim { to { transform: rotate(360deg); } }
   .icon-spin { animation: spin-anim 0.85s linear infinite; }
+
+  /* ============================================================
+     Narrow viewport adaptation (impeccable/adapt — critique P1)
+     Structural stack / wrap / scroll-strip. No font-size shrinking.
+     ============================================================ */
+  @media (max-width: 640px) {
+    .wrap { padding: 24px 16px 40px; }
+    .panel { padding: 16px; }
+
+    /* Tabs: horizontally-scrolling strip so History stays reachable
+       without panning the whole document. */
+    .tabs {
+      flex-wrap: nowrap;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+      scrollbar-width: none;
+      padding-bottom: 4px;
+    }
+    .tabs::-webkit-scrollbar { display: none; }
+    .tab {
+      flex: 0 0 auto;
+      min-width: max-content;
+      min-height: 44px;
+      display: inline-flex;
+      align-items: center;
+    }
+
+    /* Primary row: stack the field above a full-width CTA instead of
+       squeezing the input beside a fixed-size button. */
+    .row { flex-direction: column; align-items: stretch; }
+    .row .field { width: 100%; }
+    button.go { width: 100%; min-height: 44px; padding: 13px 26px; }
+
+    /* Option rows: the domain/tag/path-filter opts (style="flex:1")
+       get their own line, label stacked above the input, so the
+       200px input floor never competes with a sibling for width. */
+    .opts { gap: 8px 16px; }
+    .opts .opt[style*="flex:1"] {
+      flex-basis: 100% !important;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 4px;
+    }
+    #includeDomains, #excludeDomains, #includeTags, #excludeTags,
+    #crawlInclude, #crawlExclude, #mapSearch { min-width: 0 !important; }
+
+    /* "scrape as" checkbox group is a lone .opt (no flex-wrap of its
+       own) nested inside another .opt — give it one here. */
+    #scrapeFormats { flex-wrap: wrap; row-gap: 8px; }
+
+    /* History rows: let metadata wrap and drop the label's width floor
+       instead of forcing the row wider than the panel. */
+    .hrun .hmeta { white-space: normal; }
+    .hrun .hlabel { min-width: 0; }
+
+    /* Long unbroken strings (snippets can contain bare URLs) wrap
+       instead of widening the card / document. */
+    .card .snippet { overflow-wrap: anywhere; }
+
+    /* Header health readout: wrap per-service status instead of
+       overflowing off the right edge. */
+    #health { flex-wrap: wrap; row-gap: 6px; }
+  }
 </style>
 </head>
 <body>
