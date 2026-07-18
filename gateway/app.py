@@ -8,10 +8,14 @@ Endpoints:
   POST /search              — same, JSON body
   POST /search/stream       — same, but streams progress events (SSE) before the result
   POST /fetch               — fetch one URL (or a batch of up to 20) via Firecrawl;
-                              PDFs are parsed locally with pypdf
+                              PDFs are parsed locally with pypdf; optional LLM page summaries
   POST /fetch/stream        — same, but streams progress events (SSE) before the result
-  POST /crawl               — crawl a site via Firecrawl (sync facade over its async job API)
+  POST /crawl               — crawl a site via Firecrawl (sync facade over its async job API);
+                              optional LLM per-page summaries
   POST /crawl/stream        — same, with SSE progress ticks while pages are crawled
+  POST /navigate            — LLM-guided goal-directed walk: the model follows links toward a
+                              natural-language goal and returns a cited answer + visited trail
+  POST /navigate/stream     — same, with SSE progress per step
   POST /map                 — discover a site's URLs via Firecrawl map (no scraping)
   POST /map/stream          — same, SSE
   GET  /history             — recent run history (SQLite-backed)
@@ -66,7 +70,7 @@ CRAWL_MAX_LIMIT = 100
 
 FIRECRAWL_HEADERS = {"Authorization": "Bearer local"}  # self-hosted: auth disabled, header ignored
 
-app = FastAPI(title="local-search gateway", version="1.2.0")
+app = FastAPI(title="local-search gateway", version="1.3.0")
 
 
 @app.get("/")
@@ -425,6 +429,10 @@ class FetchRequest(BaseModel):
         False,
         description="Force rendering through the Camoufox anti-detect browser "
         "(slower; use for bot-protected sites)",
+    )
+    summarize: bool = Field(
+        False,
+        description="Attach an LLM-generated summary to each page (requires OPENROUTER_API_KEY)",
     )
 
     @model_validator(mode="after")
@@ -937,7 +945,87 @@ async def healthz():
     return status
 
 
-# ── Answer synthesis via OpenRouter (or any OpenAI-compatible endpoint) ──
+# ── LLM access via OpenRouter (or any OpenAI-compatible endpoint) ──
+
+async def llm_chat(
+    messages: list[dict[str, str]],
+    *,
+    max_tokens: int,
+    log: RunLog,
+    stage: str = "llm",
+    temperature: float | None = None,
+    timeout: float = 60.0,
+) -> str:
+    """Single chokepoint for all chat-completion calls (answer synthesis,
+    summarization, navigation). Returns the assistant message content."""
+    if not OPENROUTER_API_KEY:
+        raise HTTPException(status_code=400, detail="OPENROUTER_API_KEY not configured — set it in .env")
+    body: dict[str, Any] = {"model": ANSWER_MODEL, "max_tokens": max_tokens, "messages": messages}
+    if temperature is not None:
+        body["temperature"] = temperature
+    for attempt in range(2):
+        try:
+            r = await client.post(
+                f"{ANSWER_BASE_URL}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                    "HTTP-Referer": "http://localhost:8088",
+                    "X-Title": "local-search",
+                },
+                json=body,
+                timeout=httpx.Timeout(timeout, connect=10.0),
+            )
+            # Free-tier models rate-limit aggressively; absorb one 429.
+            if r.status_code == 429 and attempt == 0:
+                log.emit(stage, f"{ANSWER_MODEL} rate-limited (429) — retrying in 2s")
+                await asyncio.sleep(2)
+                continue
+            r.raise_for_status()
+        except httpx.HTTPError as e:
+            detail = f"{type(e).__name__}: {e}".rstrip(": ")
+            raise HTTPException(status_code=502, detail=f"LLM call failed: {detail}") from e
+        payload = r.json()
+        # OpenRouter can return {"error": ...} with HTTP 200 on some upstream failures.
+        try:
+            content = payload["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError):
+            err = (payload.get("error") or {}).get("message") if isinstance(payload.get("error"), dict) else payload.get("error")
+            raise HTTPException(
+                status_code=502,
+                detail=f"LLM returned no content: {err or 'unexpected response shape'}",
+            )
+        if not content:
+            raise HTTPException(status_code=502, detail="LLM returned empty content")
+        return content
+    raise HTTPException(status_code=502, detail="LLM call failed: rate-limited (429)")
+
+
+_JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.S)
+
+
+def _extract_json(text: str) -> dict[str, Any] | None:
+    """Parse a JSON object out of possibly-chatty model output: strict JSON
+    first, then a ```json fence, then the greedy outermost {...} span."""
+    for candidate in (
+        text,
+        *(m.group(1) for m in _JSON_FENCE_RE.finditer(text)),
+    ):
+        try:
+            obj = json.loads(candidate.strip())
+            if isinstance(obj, dict):
+                return obj
+        except (json.JSONDecodeError, AttributeError):
+            pass
+    start, end = text.find("{"), text.rfind("}")
+    if 0 <= start < end:
+        try:
+            obj = json.loads(text[start : end + 1])
+            if isinstance(obj, dict):
+                return obj
+        except json.JSONDecodeError:
+            pass
+    return None
+
 
 async def synthesize_answer(
     query: str, results: list[dict[str, Any]], mode: str, log: RunLog
@@ -950,35 +1038,92 @@ async def synthesize_answer(
             text += "\nExcerpt:\n" + r["content"][:3000]
         blocks.append(text)
     log.emit("answer", f"synthesizing answer from {len(sources)} sources via {ANSWER_MODEL}")
-    r = await client.post(
-        f"{ANSWER_BASE_URL}/chat/completions",
-        headers={
-            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-            "HTTP-Referer": "http://localhost:8088",
-            "X-Title": "local-search",
-        },
-        json={
-            "model": ANSWER_MODEL,
-            "max_tokens": 700 if mode == "basic" else 1200,
-            "messages": [
+    text = await llm_chat(
+        [
+            {
+                "role": "system",
+                "content": "Answer the question using ONLY the numbered sources provided. "
+                "Cite sources with [n] after each claim. If the sources are insufficient "
+                "to answer, say so plainly.",
+            },
+            {
+                "role": "user",
+                "content": f"Question: {query}\n\nSources:\n\n" + "\n\n".join(blocks),
+            },
+        ],
+        max_tokens=700 if mode == "basic" else 1200,
+        log=log,
+        stage="answer",
+    )
+    log.emit("answer", f"answer ready ({len(text)} chars)")
+    return {"answer": text, "answer_model": ANSWER_MODEL}
+
+
+# ── Per-page summarization (summarize flag on /fetch and /crawl) ──
+
+# Generous budget: reasoning models (e.g. nemotron) spend tokens thinking
+# before the visible summary, and max_tokens covers both.
+SUMMARIZE_MAX_TOKENS = 800
+SUMMARIZE_INPUT_CHARS = 6000
+SUMMARIZE_CONCURRENCY = 3  # below FETCH_BATCH_CONCURRENCY: free-tier rate limits
+
+
+async def summarize_page(page: dict[str, Any], log: RunLog, goal: str | None = None):
+    """Attach page['summary'] in place; on failure attach page['summary_error']
+    and never raise (mirrors the screenshot_error/content_error pattern)."""
+    url = page.get("url") or "?"
+    text = (page.get("markdown") or "").strip()
+    if not text:
+        page["summary_error"] = "no markdown content to summarize"
+        return
+    prompt = (
+        f"Summarize this page relative to the goal: {goal}" if goal else "Summarize this page."
+    )
+    try:
+        log.emit("summarize", f"summarizing {url} via {ANSWER_MODEL}")
+        summary = await llm_chat(
+            [
                 {
                     "role": "system",
-                    "content": "Answer the question using ONLY the numbered sources provided. "
-                    "Cite sources with [n] after each claim. If the sources are insufficient "
-                    "to answer, say so plainly.",
+                    "content": "You summarize web pages. Reply with a tight 2-4 sentence "
+                    "summary of the page content. No preamble, no markdown headings.",
                 },
                 {
                     "role": "user",
-                    "content": f"Question: {query}\n\nSources:\n\n" + "\n\n".join(blocks),
+                    "content": f"{prompt}\n\nPage: {page.get('title') or url}\nURL: {url}\n\n"
+                    + text[:SUMMARIZE_INPUT_CHARS],
                 },
             ],
-        },
-        timeout=httpx.Timeout(60.0, connect=10.0),
-    )
-    r.raise_for_status()
-    text = r.json()["choices"][0]["message"]["content"]
-    log.emit("answer", f"answer ready ({len(text)} chars)")
-    return {"answer": text, "answer_model": ANSWER_MODEL}
+            max_tokens=SUMMARIZE_MAX_TOKENS,
+            log=log,
+            stage="summarize",
+        )
+        page["summary"] = summary.strip()
+        page["summary_model"] = ANSWER_MODEL
+        log.emit("summarize", f"summary ready for {url} ({len(page['summary'])} chars)")
+    except HTTPException as e:
+        page["summary_error"] = str(e.detail)
+        log.emit("summarize", f"summary failed for {url}: {e.detail}")
+    except Exception as e:
+        page["summary_error"] = str(e)
+        log.emit("summarize", f"summary failed for {url}: {e}")
+
+
+async def _summarize_pages(pages: list[dict[str, Any]], log: RunLog, goal: str | None = None):
+    if not pages:
+        return
+    if not OPENROUTER_API_KEY:
+        log.emit("summarize", "skipped: no OPENROUTER_API_KEY configured")
+        for page in pages:
+            page["summary_error"] = "OPENROUTER_API_KEY not configured — set it in .env"
+        return
+    sem = asyncio.Semaphore(SUMMARIZE_CONCURRENCY)
+
+    async def one(page: dict[str, Any]):
+        async with sem:
+            await summarize_page(page, log, goal=goal)
+
+    await asyncio.gather(*(one(p) for p in pages))
 
 
 async def _run_search(req: SearchRequest, log: RunLog) -> dict[str, Any]:
@@ -1060,6 +1205,7 @@ def _fetch_summary(page: dict[str, Any]) -> dict[str, Any]:
             "failed": page.get("failed_count", 0),
             "markdown_chars": sum(len(p.get("markdown") or "") for p in page["results"]) or None,
             "screenshots": sum(1 for p in page["results"] if "screenshot" in p),
+            **_summarize_counts(page["results"]),
         }
     return {
         "title": page.get("title"),
@@ -1073,7 +1219,19 @@ def _fetch_summary(page: dict[str, Any]) -> dict[str, Any]:
         "screenshot_error": page.get("screenshot_error"),
         "screenshot_note": page.get("screenshot_note"),
         **({"pdf_pages": page["page_count"]} if page.get("is_pdf") else {}),
+        **_summarize_counts([page]),
     }
+
+
+def _summarize_counts(pages: list[dict[str, Any]]) -> dict[str, Any]:
+    summarized = sum(1 for p in pages if "summary" in p)
+    errors = sum(1 for p in pages if "summary_error" in p)
+    out: dict[str, Any] = {}
+    if summarized:
+        out["summarized"] = summarized
+    if errors:
+        out["summary_errors"] = errors
+    return out
 
 
 # ── Endpoint plumbing: run + record history; optionally stream events ──
@@ -1233,9 +1391,26 @@ async def _run_fetch_batch(req: FetchRequest, log: RunLog) -> dict[str, Any]:
 
 
 async def _run_fetch(req: FetchRequest, log: RunLog) -> dict[str, Any]:
+    formats = list(req.formats) if req.formats else ["markdown"]
+    # Summaries are derived from markdown; scrape it internally when the
+    # caller didn't ask for it, then strip it back off (same as json).
+    strip_md = req.summarize and "markdown" not in formats
+    if strip_md:
+        req = req.model_copy(update={"formats": formats + ["markdown"]})
     if req.urls:
-        return await _run_fetch_batch(req, log)
-    return _apply_max_chars(await firecrawl_scrape(req, log), req.max_chars)
+        result = await _run_fetch_batch(req, log)
+        pages = result["results"]
+    else:
+        result = _apply_max_chars(await firecrawl_scrape(req, log), req.max_chars)
+        pages = [result]
+    if req.summarize:
+        await _summarize_pages(pages, log)
+    if strip_md:
+        for page in pages:
+            for k in ("markdown", "truncated", "truncated_at"):
+                page.pop(k, None)
+            page["formats"] = formats
+    return result
 
 
 def _fetch_label(req: FetchRequest) -> str:
@@ -1590,6 +1765,10 @@ class CrawlRequest(BaseModel):
     only_main_content: bool = Field(True, description="Strip nav/footer boilerplate")
     max_chars: int | None = Field(None, description="Per-page markdown truncation")
     timeout_s: int = Field(300, ge=30, le=900, description="Overall crawl budget in seconds")
+    summarize: bool = Field(
+        False,
+        description="Attach an LLM-generated summary to each crawled page (requires OPENROUTER_API_KEY)",
+    )
 
 
 CRAWL_POLL_INTERVAL = 2.0
@@ -1618,9 +1797,10 @@ async def _run_crawl(req: CrawlRequest, log: RunLog) -> dict[str, Any]:
             detail=f"Unsupported format(s): {bad}. Supported: {sorted(SUPPORTED_FORMATS - {'screenshot'})}",
         )
     want_json = "json" in formats
-    # json is derived from markdown server-side, so ensure markdown is scraped.
+    # json and summaries are derived from markdown server-side, so ensure
+    # markdown is scraped whenever either is requested.
     fc_formats = [f for f in formats if f != "json"]
-    if want_json and "markdown" not in fc_formats:
+    if (want_json or req.summarize) and "markdown" not in fc_formats:
         fc_formats.append("markdown")
 
     payload: dict[str, Any] = {
@@ -1735,6 +1915,17 @@ async def _run_crawl(req: CrawlRequest, log: RunLog) -> dict[str, Any]:
         log.emit("structure", f"derived structured json for {len(pages)} pages")
     log.emit("crawl", f"crawl {final_status}: {len(pages)} pages")
 
+    if req.summarize and pages:
+        strip_md = "markdown" not in formats
+        if strip_md:
+            for page, data in zip(pages, raw_pages):
+                page["markdown"] = data.get("markdown")
+        log.emit("summarize", f"summarizing {len(pages)} pages (concurrency {SUMMARIZE_CONCURRENCY})")
+        await _summarize_pages(pages, log)
+        if strip_md:
+            for page in pages:
+                page.pop("markdown", None)
+
     return {
         "url": req.url,
         "job_id": job_id,
@@ -1754,6 +1945,7 @@ def _crawl_summary(result: dict[str, Any]) -> dict[str, Any]:
         "page_count": result.get("page_count", 0),
         "total": result.get("total"),
         "formats": result.get("formats"),
+        **_summarize_counts(result.get("pages") or []),
     }
 
 
@@ -1769,4 +1961,280 @@ async def crawl_site(req: CrawlRequest):
 async def crawl_stream(req: CrawlRequest):
     return _stream_response(
         "crawl", req.url, req.model_dump(), lambda l: _run_crawl(req, l), _crawl_summary
+    )
+
+
+# ── Navigate: LLM-guided goal-directed walk through a website ──
+
+NAVIGATE_MAX_STEPS_CAP = 15
+NAVIGATE_DEFAULT_STEPS = 6
+NAVIGATE_LINKS_SHOWN = 40
+NAVIGATE_PAGE_CHARS = 6000
+NAVIGATE_FINDINGS_CHARS = 4000
+
+
+class NavigateRequest(BaseModel):
+    url: str = Field(..., description="Starting URL for the walk")
+    goal: str = Field(
+        ..., description="Natural-language goal, e.g. 'find the pricing of the team plan'"
+    )
+    max_steps: int = Field(
+        NAVIGATE_DEFAULT_STEPS, ge=1, le=NAVIGATE_MAX_STEPS_CAP,
+        description=f"Max pages to visit (hard cap {NAVIGATE_MAX_STEPS_CAP})",
+    )
+    allow_subdomains: bool = Field(True, description="Follow links onto sibling subdomains")
+    allow_external_links: bool = Field(False, description="Follow links to other domains")
+    stealth: bool = Field(False, description="Render pages through the anti-detect browser")
+    only_main_content: bool = Field(True, description="Strip nav/footer boilerplate")
+    max_chars: int | None = Field(
+        None, description=f"Per-page content budget shown to the LLM (default {NAVIGATE_PAGE_CHARS})"
+    )
+    timeout_s: int = Field(300, ge=30, le=900, description="Overall navigation budget in seconds")
+
+
+def _canon(url: str) -> str:
+    """Normalize a URL for visited-set dedup: drop fragment, trailing slash."""
+    p = urlparse(url)
+    path = p.path.rstrip("/") or "/"
+    return p._replace(fragment="", path=path).geturl()
+
+
+def _in_scope(candidate: str, root_host: str, allow_sub: bool, allow_ext: bool) -> bool:
+    p = urlparse(candidate)
+    if p.scheme not in ("http", "https"):
+        return False
+    host = (p.hostname or "").lower()
+    if not host:
+        return False
+    if allow_ext:
+        return True
+    root = root_host.lower()
+    strip = lambda h: h[4:] if h.startswith("www.") else h  # noqa: E731
+    if strip(host) == strip(root):
+        return True
+    if allow_sub:
+        # Same registrable domain (last two labels) covers docs.x.com ↔ www.x.com.
+        parts = strip(root).split(".")
+        reg = ".".join(parts[-2:]) if len(parts) >= 2 else strip(root)
+        return host == reg or host.endswith("." + reg)
+    return False
+
+
+def _nav_candidates(
+    links: list[Any] | None, visited: set[str], root_host: str,
+    req: NavigateRequest, base: str,
+) -> list[str]:
+    """Filter page links to in-scope, unvisited http(s) URLs the model may follow."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for link in links or []:
+        raw = link.get("url") if isinstance(link, dict) else link
+        if not raw or not isinstance(raw, str):
+            continue
+        url = urljoin(base, raw.strip())
+        c = _canon(url)
+        if c in visited or c in seen:
+            continue
+        if not _in_scope(url, root_host, req.allow_subdomains, req.allow_external_links):
+            continue
+        seen.add(c)
+        out.append(url)
+        if len(out) >= NAVIGATE_LINKS_SHOWN:
+            break
+    return out
+
+
+_NAVIGATE_SYSTEM = (
+    "You are navigating a website step by step toward a goal. Each step you see the "
+    "current page's content and a numbered list of candidate links you may follow next. "
+    "Respond with ONLY a JSON object, no other text:\n"
+    '{"findings": "facts from THIS page relevant to the goal, or empty string", '
+    '"relevant": true|false, '
+    '"goal_met": true|false, '
+    '"answer": "complete answer to the goal if goal_met, else null", '
+    '"next_url": "one URL copied verbatim from the candidate list, or null if none looks promising", '
+    '"reason": "one short sentence explaining your choice"}\n'
+    "Rules: next_url MUST be copied exactly from the candidate list — never invent URLs. "
+    "Set goal_met true only when the accumulated findings fully answer the goal."
+)
+
+
+async def _navigate_step_decision(
+    req: NavigateRequest, step: int, page: dict[str, Any],
+    candidates: list[str], findings: list[str], log: RunLog,
+) -> dict[str, Any]:
+    md = (page.get("markdown") or "").strip()[: req.max_chars or NAVIGATE_PAGE_CHARS]
+    found = "\n\n".join(findings)[-NAVIGATE_FINDINGS_CHARS:] if findings else "(none yet)"
+    cand_block = (
+        "\n".join(f"{i}. {u}" for i, u in enumerate(candidates, 1))
+        if candidates else "(no in-scope unvisited links on this page)"
+    )
+    user = (
+        f"Goal: {req.goal}\n\n"
+        f"Findings so far:\n{found}\n\n"
+        f"Current page (step {step}/{req.max_steps}): "
+        f"{page.get('title') or '(untitled)'} — {page.get('url')}\n"
+        f"---\n{md or '(no extractable content)'}\n---\n\n"
+        f"Candidate links:\n{cand_block}"
+    )
+    log.emit("navigate", f"asking {ANSWER_MODEL} to assess page and pick the next link")
+    raw = await llm_chat(
+        [{"role": "system", "content": _NAVIGATE_SYSTEM}, {"role": "user", "content": user}],
+        max_tokens=2000, log=log, stage="navigate", timeout=180.0,
+    )
+    decision = _extract_json(raw)
+    if decision is None:
+        log.emit("navigate", "model reply was not parseable JSON — treating as no-op step")
+        return {}
+    return decision
+
+
+async def _navigate_synthesize(goal: str, findings: list[str], log: RunLog) -> str | None:
+    if not findings:
+        return None
+    log.emit("navigate", f"synthesizing final answer from {len(findings)} page findings")
+    try:
+        text = await llm_chat(
+            [
+                {
+                    "role": "system",
+                    "content": "Answer the goal using ONLY the findings provided. Each finding "
+                    "is tagged with its source [url]; cite those URLs after each claim. If the "
+                    "findings are insufficient, summarize what was learned and say what's missing.",
+                },
+                {
+                    "role": "user",
+                    "content": f"Goal: {goal}\n\nFindings:\n\n" + "\n\n".join(findings),
+                },
+            ],
+            max_tokens=1500, log=log, stage="navigate", timeout=180.0,
+        )
+        return text.strip()
+    except HTTPException as e:
+        log.emit("navigate", f"final synthesis failed: {e.detail}")
+        return None
+
+
+async def _run_navigate(req: NavigateRequest, log: RunLog) -> dict[str, Any]:
+    # The LLM is the core of this endpoint — hard-fail without a key.
+    if not OPENROUTER_API_KEY:
+        raise HTTPException(
+            status_code=400, detail="/navigate requires OPENROUTER_API_KEY — set it in .env"
+        )
+    root_host = (urlparse(req.url).hostname or "").lower()
+    if not root_host:
+        raise HTTPException(status_code=400, detail=f"Invalid start URL: {req.url}")
+
+    t0 = time.monotonic()
+    visited: set[str] = set()
+    trail: list[dict[str, Any]] = []
+    findings: list[str] = []
+    status = "exhausted"
+    answer: str | None = None
+    current = req.url
+
+    for step in range(1, req.max_steps + 1):
+        if time.monotonic() - t0 >= req.timeout_s:
+            log.emit("navigate", f"time budget of {req.timeout_s}s exhausted before step {step}")
+            break
+        log.emit("navigate", f"step {step}/{req.max_steps}: scraping {current}")
+        visited.add(_canon(current))
+        sub = FetchRequest(
+            url=current, formats=["markdown", "links"],
+            only_main_content=req.only_main_content, stealth=req.stealth,
+        )
+        try:
+            page = await firecrawl_scrape(sub, log)
+        except HTTPException as e:
+            if not trail:
+                raise  # nothing accumulated — surface the scrape error directly
+            log.emit("navigate", f"scrape failed at step {step} — ending walk: {e.detail}")
+            trail.append({"url": current, "title": None, "step": step,
+                          "relevant": False, "summary": None, "error": str(e.detail)})
+            break
+
+        candidates = _nav_candidates(page.get("links"), visited, root_host, req, base=current)
+        try:
+            decision = await _navigate_step_decision(req, step, page, candidates, findings, log)
+        except HTTPException as e:
+            log.emit("navigate", f"LLM failed at step {step} — ending walk: {e.detail}")
+            trail.append({"url": current, "title": page.get("title"), "step": step,
+                          "relevant": False, "summary": None, "error": str(e.detail)})
+            if not findings:
+                raise
+            break
+
+        page_findings = str(decision.get("findings") or "").strip()
+        relevant = bool(decision.get("relevant"))
+        trail.append({"url": current, "title": page.get("title"), "step": step,
+                      "relevant": relevant, "summary": page_findings or None})
+        if page_findings:
+            findings.append(f"[{current}] {page_findings}")
+
+        if decision.get("goal_met"):
+            answer = str(decision.get("answer") or "").strip() or None
+            status = "achieved"
+            log.emit("navigate", f"goal achieved at step {step}")
+            break
+
+        next_url = str(decision.get("next_url") or "").strip()
+        chosen = None
+        if next_url:
+            nc = _canon(urljoin(current, next_url))
+            chosen = next((c for c in candidates if _canon(c) == nc), None)
+        if chosen is None:
+            if next_url:
+                log.emit("navigate", f"model proposed a URL outside the candidate list ({next_url}) — stopping")
+            else:
+                log.emit("navigate", "no promising link to follow — stopping")
+            status = "dead_end"
+            break
+        reason = str(decision.get("reason") or "").strip()
+        log.emit("navigate", f"goal not yet met; following {chosen}" + (f" — {reason}" if reason else ""))
+        current = chosen
+    else:
+        log.emit("navigate", f"max_steps={req.max_steps} reached without meeting the goal")
+
+    if answer is None:
+        answer = await _navigate_synthesize(req.goal, findings, log)
+
+    return {
+        "url": req.url,
+        "goal": req.goal,
+        "status": status,
+        "steps": len(trail),
+        "answer": answer,
+        "answer_model": ANSWER_MODEL,
+        "pages": trail,
+    }
+
+
+def _navigate_summary(result: dict[str, Any]) -> dict[str, Any]:
+    pages = result.get("pages") or []
+    return {
+        "status": result.get("status"),
+        "steps": result.get("steps", 0),
+        "relevant_pages": sum(1 for p in pages if p.get("relevant")),
+        "answer": bool(result.get("answer")),
+    }
+
+
+def _navigate_label(req: NavigateRequest) -> str:
+    return f"{req.goal} @ {req.url}"
+
+
+@app.post("/navigate")
+async def navigate_site(req: NavigateRequest):
+    label = _navigate_label(req)
+    log = RunLog("navigate", label)
+    return await _run_recorded(
+        "navigate", label, req.model_dump(), lambda l: _run_navigate(req, l), _navigate_summary, log
+    )
+
+
+@app.post("/navigate/stream")
+async def navigate_stream(req: NavigateRequest):
+    label = _navigate_label(req)
+    return _stream_response(
+        "navigate", label, req.model_dump(), lambda l: _run_navigate(req, l), _navigate_summary
     )

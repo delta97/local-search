@@ -1,6 +1,6 @@
 # local-search
 
-A fully self-hosted web search + page-fetching pipeline for LLMs — SearXNG metasearch, Firecrawl scraping, and an anti-detect browser behind one LLM-friendly gateway, with an MCP server and an interactive web console on top. One `docker compose up` gives your agents `web_search`, `fetch_page`, `crawl_site`, and `map_site` with no external APIs, no keys, and no per-request costs.
+A fully self-hosted web search + page-fetching pipeline for LLMs — SearXNG metasearch, Firecrawl scraping, and an anti-detect browser behind one LLM-friendly gateway, with an MCP server and an interactive web console on top. One `docker compose up` gives your agents `web_search`, `fetch_page`, `crawl_site`, and `map_site` with no external APIs, no keys, and no per-request costs — plus optional LLM extras (cited answers, per-page summaries, and goal-directed `navigate_site`) when an OpenRouter key is configured.
 
 ![local-search web console running a live search: streamed progress log and ranked result cards](docs/screenshots/search-results.png)
 
@@ -14,6 +14,7 @@ A fully self-hosted web search + page-fetching pipeline for LLMs — SearXNG met
                         │    │      └── PDFs parsed locally (pypdf)    │
                         │    ├── /crawl ───▶ Firecrawl crawl job       │
                         │    ├── /map ─────▶ Firecrawl map             │
+                        │    ├── /navigate ▶ LLM-guided site walk      │
                         │    ├── /history ─▶ SQLite run history        │
                         │    │                 ├── camoufox ◀─default  │
                         │    │                 ├── botasaurus (opt-in) │
@@ -28,9 +29,9 @@ A fully self-hosted web search + page-fetching pipeline for LLMs — SearXNG met
 - **Firecrawl** (self-hosted, prebuilt GHCR images) — headless-browser scraping, returns clean markdown. Its native `SEARXNG_ENDPOINT` support is also wired up, so Firecrawl's own `/v2/search` works too.
 - **Camoufox** (`camoufox/`) — [anti-detect Firefox](https://camoufox.com/) running Xvfb-backed virtual headless with spoofed fingerprints (presents as Windows desktop Firefox). It implements the same `/scrape` contract as Firecrawl's playwright-service and is wired in as **Firecrawl's default browser rendering engine**. It also exposes a `/screenshot` endpoint (full-page PNG via Playwright's `page.screenshot`) that the gateway calls **directly** — self-hosted Firecrawl cannot produce screenshots (that capability lives in its cloud-only fire-engine), so the `screenshot` format bypasses Firecrawl entirely.
 - **Botasaurus** (`botasaurus/`, opt-in) — [anti-detect Chrome](https://github.com/omkarcloud/botasaurus) alternative engine implementing the exact same `/scrape`, `/screenshot`, and `/health` contract as camoufox, plus an extra `bypass_cloudflare` request flag (camoufox silently ignores it). See "Switching browser engines" below.
-- **Gateway** — a small FastAPI service exposing the LLM-friendly endpoints (search, fetch, crawl, map).
-- **OpenRouter** (optional) — when an API key is configured, `/search` can synthesize a cited answer over the top results via any OpenAI-compatible chat endpoint (OpenRouter by default).
-- **MCP server** — stdio MCP server (`mcp-server/`) exposing `web_search`, `fetch_page`, `crawl_site`, and `map_site` tools.
+- **Gateway** — a small FastAPI service exposing the LLM-friendly endpoints (search, fetch, crawl, map, navigate).
+- **OpenRouter** (optional) — when an API key is configured, the gateway gains AI features via any OpenAI-compatible chat endpoint (OpenRouter by default): cited answers on `/search`, per-page summaries on `/fetch`/`/crawl`, and LLM-guided navigation on `/navigate`.
+- **MCP server** — stdio MCP server (`mcp-server/`) exposing `web_search`, `fetch_page`, `crawl_site`, `map_site`, and `navigate_site` tools.
 
 ## Documentation
 
@@ -192,6 +193,7 @@ Provide **exactly one** of `url` or `urls` (both/neither → 422). A single fetc
 | `location`         | str            | ISO-3166 country code to geo-route from (`US`, `GB`, …) |
 | `actions`          | list[object]   | pre-extract interactions (wait/click/scroll/screenshot/write/press) |
 | `stealth`          | bool           | force Camoufox anti-detect browser (slower; for bot-protected sites) |
+| `summarize`        | bool           | attach an LLM-generated `summary` (+ `summary_model`) to each page — requires `OPENROUTER_API_KEY` (see [AI features](#ai-features-openrouter)). Best-effort: failures set `summary_error` instead of failing the fetch |
 
 ```bash
 # Markdown + screenshot of a JS-heavy page, rendered stealthily from the US
@@ -235,8 +237,36 @@ curl -X POST http://localhost:8088/crawl \
 | `only_main_content` | bool | true | strip nav/footer boilerplate |
 | `max_chars` | int | — | per-page markdown truncation |
 | `timeout_s` | int | 300 | overall crawl budget (30–900); on timeout the job is cancelled and partial pages returned |
+| `summarize` | bool | false | attach an LLM `summary` to each crawled page (requires `OPENROUTER_API_KEY`; runs after the crawl at concurrency 3, so it adds LLM latency per page — best-effort, failures set per-page `summary_error`) |
 
 Returns `{url, job_id, status: completed|timeout|failed, partial, total, page_count, formats, pages: [...]}`. Each page has the same shape as a single fetch. Timeout/failure with partial pages returns HTTP 200 with `status`/`partial` markers (not an error), so you keep whatever was crawled.
+
+### Navigate a site toward a goal (LLM-guided)
+
+`POST /navigate` is a goal-directed walk: starting from a URL, an LLM reads each page, collects findings relevant to a natural-language goal, and picks which in-scope link to follow next — until the goal is met, it dead-ends, or the step/time budget runs out. It returns a cited answer plus the visited trail. Use `/navigate/stream` to watch each step live over SSE.
+
+```bash
+curl -sN -X POST http://localhost:8088/navigate/stream \
+  -H 'Content-Type: application/json' \
+  -d '{"url": "https://docs.firecrawl.dev",
+       "goal": "How do I set a per-page scrape timeout?", "max_steps": 4}'
+```
+
+| option | type | default | notes |
+|--------|------|---------|-------|
+| `url` | str | — | starting URL |
+| `goal` | str | — | natural-language goal to pursue |
+| `max_steps` | int | 6 | max pages visited (**hard cap 15**) |
+| `allow_subdomains` | bool | true | follow links onto sibling subdomains |
+| `allow_external_links` | bool | false | follow links to other domains |
+| `stealth` | bool | false | render pages via the anti-detect browser |
+| `only_main_content` | bool | true | strip nav/footer boilerplate |
+| `max_chars` | int | 6000 | per-page content budget shown to the LLM |
+| `timeout_s` | int | 300 | overall navigation budget (30–900) |
+
+Returns `{url, goal, status, steps, answer, answer_model, pages: [{url, title, step, relevant, summary}]}` where `status` is `achieved` (the model declared the goal met), `dead_end` (no promising in-scope link left), or `exhausted` (step/time budget spent). Whatever findings were collected are synthesized into the `answer` either way, with `[url]` citations. The model may only follow links actually present on the visited pages (hallucinated URLs are rejected), and never leaves the start domain unless `allow_external_links` is set.
+
+**Requires `OPENROUTER_API_KEY`** — unlike the best-effort `summarize`/`include_answer` flags, `/navigate` fails with 400 without it, since the LLM *is* the navigator. Note that free-tier models (e.g. `:free` OpenRouter slugs) are slow and rate-limited: one LLM call is made per step plus a final synthesis, so a 6-step navigation can take several minutes.
 
 ### Map a site
 
@@ -254,9 +284,10 @@ Params: `url`, `search` (filter/rank links by term), `limit` (default 100, max 5
 
 Tools:
 - `web_search(query, max_results, fetch_content, fetch_top, fetch_formats, fetch_stealth, categories, language, engines, pageno, safesearch, time_range, include_domains, exclude_domains, start_date, end_date, include_answer)`
-- `fetch_page(url | urls, formats, only_main_content, include_tags, exclude_tags, max_chars, max_tokens, wait_for, timeout, location, actions, stealth)` — one URL or a batch of up to 20; PDFs parsed locally
-- `crawl_site(url, limit, max_depth, include_paths, exclude_paths, crawl_entire_domain, allow_subdomains, formats, max_chars, timeout_s)`
+- `fetch_page(url | urls, formats, only_main_content, include_tags, exclude_tags, max_chars, max_tokens, wait_for, timeout, location, actions, stealth, summarize)` — one URL or a batch of up to 20; PDFs parsed locally
+- `crawl_site(url, limit, max_depth, include_paths, exclude_paths, crawl_entire_domain, allow_subdomains, formats, max_chars, timeout_s, summarize)`
 - `map_site(url, search, limit, include_subdomains, sitemap)`
+- `navigate_site(url, goal, max_steps, allow_subdomains, allow_external_links, stealth, only_main_content, max_chars, timeout_s)` — LLM-guided goal-directed walk (needs `OPENROUTER_API_KEY` on the gateway)
 
 Register with Claude Code:
 
@@ -278,17 +309,23 @@ Or in any MCP client config:
 }
 ```
 
-## Answer synthesis (OpenRouter)
+## AI features (OpenRouter)
 
-`/search`'s `include_answer` calls an OpenAI-compatible chat endpoint (OpenRouter by default) to synthesize a cited answer over the top results. Configure it with a local `.env` file (see `.env.example`; `.env` is gitignored):
+Three gateway features call an OpenAI-compatible chat endpoint (OpenRouter by default), all through the same model knob:
+
+- `/search`'s `include_answer` — synthesize a cited answer over the top results (best-effort: without a key the search still works and `answer_error` explains why)
+- `/fetch` + `/crawl`'s `summarize` — attach a per-page LLM summary (best-effort: failures set per-page `summary_error`)
+- `/navigate` — LLM-guided goal-directed navigation (requires the key; fails with 400 without it)
+
+Configure with a local `.env` file (see `.env.example`; `.env` is gitignored):
 
 ```bash
-OPENROUTER_API_KEY=sk-or-...           # required to enable answers
-ANSWER_MODEL=openai/gpt-4o-mini        # any model slug your endpoint accepts
+OPENROUTER_API_KEY=sk-or-...           # required to enable AI features
+ANSWER_MODEL=openai/gpt-4o-mini        # any model slug your endpoint accepts — used by all three features
 ANSWER_BASE_URL=https://openrouter.ai/api/v1   # override for Ollama/vLLM/etc.
 ```
 
-`docker compose up -d gateway` picks these up (they're passed through in `docker-compose.yml`). Point `ANSWER_BASE_URL` at any OpenAI-compatible `/chat/completions` server to keep answers fully self-hosted. Without a key, search still works — only the answer is skipped (with an `answer_error`).
+`docker compose up -d gateway` picks these up (they're passed through in `docker-compose.yml`). Point `ANSWER_BASE_URL` at any OpenAI-compatible `/chat/completions` server to keep everything fully self-hosted. Free OpenRouter models (`:free` slugs) work but are slow and rate-limited — the gateway retries once on 429 and caps summarization concurrency at 3, but a many-step `/navigate` or a large summarized crawl can still take minutes.
 
 ## Direct upstream access (optional)
 
