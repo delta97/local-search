@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // MCP server for the local-search pipeline (SearXNG + Firecrawl behind the gateway API).
 // Tools: web_search (search the web, optional cited answer), fetch_page (one URL or a
-// batch of up to 20, PDFs included), crawl_site (multi-page crawl), map_site (URL discovery).
+// batch of up to 20, PDFs included, optional LLM summaries), crawl_site (multi-page crawl,
+// optional LLM summaries), map_site (URL discovery), navigate_site (LLM-guided walk
+// toward a natural-language goal).
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -234,6 +236,12 @@ server.registerTool(
           "Force rendering through the Camoufox anti-detect browser. Slower; " +
             "use when a normal fetch is blocked (Cloudflare, bot walls, etc)."
         ),
+      summarize: z
+        .boolean()
+        .default(false)
+        .describe(
+          "Attach an LLM-generated summary to each page (needs OPENROUTER_API_KEY on the gateway)"
+        ),
     },
   },
   async ({
@@ -250,6 +258,7 @@ server.registerTool(
     location,
     actions,
     stealth,
+    summarize,
   }) => {
     if (Boolean(url) === Boolean(urls)) {
       throw new Error("Provide exactly one of 'url' or 'urls'");
@@ -270,6 +279,7 @@ server.registerTool(
         location: location ?? null,
         actions: actions ?? null,
         stealth,
+        summarize,
       },
       urls ? 300_000 : 120_000
     );
@@ -327,6 +337,13 @@ server.registerTool(
         .max(900)
         .default(300)
         .describe("Overall crawl budget in seconds; partial pages are returned on timeout"),
+      summarize: z
+        .boolean()
+        .default(false)
+        .describe(
+          "Attach an LLM-generated summary to each crawled page (needs OPENROUTER_API_KEY " +
+            "on the gateway; adds LLM latency per page)"
+        ),
     },
   },
   async ({ timeout_s, ...rest }) => {
@@ -334,6 +351,69 @@ server.registerTool(
       "/crawl",
       { ...rest, timeout_s },
       (timeout_s ?? 300) * 1000 + 30_000
+    );
+    return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+  }
+);
+
+server.registerTool(
+  "navigate_site",
+  {
+    title: "Navigate site toward a goal",
+    description:
+      "LLM-guided goal-directed navigation: starting from a URL, the model reads each page, " +
+      "collects findings relevant to a natural-language goal, and chooses which link to follow " +
+      "next until the goal is met (or steps/time run out). Returns a cited answer plus the " +
+      "visited trail. Needs OPENROUTER_API_KEY on the gateway; slow with free-tier models " +
+      "(a multi-step walk can take minutes).",
+    inputSchema: {
+      url: z.string().url().describe("Starting URL for the walk"),
+      goal: z
+        .string()
+        .describe("Natural-language goal, e.g. 'find the pricing of the team plan'"),
+      max_steps: z
+        .number()
+        .int()
+        .min(1)
+        .max(15)
+        .default(6)
+        .describe("Max pages to visit (hard cap 15)"),
+      allow_subdomains: z
+        .boolean()
+        .default(true)
+        .describe("Follow links onto sibling subdomains"),
+      allow_external_links: z
+        .boolean()
+        .default(false)
+        .describe("Follow links to other domains"),
+      stealth: z
+        .boolean()
+        .default(false)
+        .describe("Render pages through the Camoufox anti-detect browser"),
+      only_main_content: z
+        .boolean()
+        .default(true)
+        .describe("Strip navigation/footer boilerplate"),
+      max_chars: z
+        .number()
+        .int()
+        .min(1000)
+        .optional()
+        .describe("Per-page content budget shown to the LLM (default 6000)"),
+      timeout_s: z
+        .number()
+        .int()
+        .min(30)
+        .max(900)
+        .default(300)
+        .describe("Overall navigation budget in seconds"),
+    },
+  },
+  async ({ timeout_s, max_chars, ...rest }) => {
+    const data = await callGateway(
+      "/navigate",
+      { ...rest, max_chars: max_chars ?? null, timeout_s },
+      (timeout_s ?? 300) * 1000 + 60_000
     );
     return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
   }
@@ -369,5 +449,5 @@ server.registerTool(
 const transport = new StdioServerTransport();
 await server.connect(transport);
 console.error(
-  `local-search MCP server running (gateway: ${GATEWAY_URL}; tools: web_search, fetch_page, crawl_site, map_site)`
+  `local-search MCP server running (gateway: ${GATEWAY_URL}; tools: web_search, fetch_page, crawl_site, map_site, navigate_site)`
 );
