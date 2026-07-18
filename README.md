@@ -1,6 +1,8 @@
 # local-search
 
-A fully self-hosted web search + page fetching pipeline for LLMs.
+A fully self-hosted web search + page-fetching pipeline for LLMs — SearXNG metasearch, Firecrawl scraping, and an anti-detect browser behind one LLM-friendly gateway, with an MCP server and an interactive web console on top. One `docker compose up` gives your agents `web_search`, `fetch_page`, `crawl_site`, and `map_site` with no external APIs, no keys, and no per-request costs.
+
+![local-search web console running a live search: streamed progress log and ranked result cards](docs/screenshots/search-results.png)
 
 ```
                         ┌──────────────────────────────────────────────┐
@@ -46,9 +48,39 @@ Health check: `curl http://localhost:8088/healthz`
 
 ## Web console
 
-Open **http://localhost:8088** in a browser for an interactive search and page-fetch console. The header shows live health status for all upstream services. Runs show a live step-by-step progress log ("querying searxng… → scraping … → rendering screenshot…") as they execute, and the **History** tab lists past runs with their full event timelines.
+Open **http://localhost:8088** for an interactive console over the whole pipeline — one tab per capability (Search, Fetch page, Crawl, Map, History). The header shows live health for every upstream service, so you can see at a glance that the gateway, SearXNG, Firecrawl, and the browser engine are all up.
+
+![Console home: search tab with query options, domain filters, answer synthesis pills, and live upstream health in the header](docs/screenshots/console-home.png)
+
+### Live streamed runs
+
+Every run executes against the SSE streaming endpoints, so the console shows a step-by-step progress log as it happens — `querying searxng… → 6 results → completed in 1.3s` — followed by ranked result cards with engine/score metadata. Search results can be filtered by time range and domain, scraped inline, and re-rendered as raw JSON with one click (see the screenshot at the top of this README).
+
+### Fetch any page, in any combination of formats
+
+The Fetch tab takes a single URL or a batch of up to 20, with toggles for every format (`markdown`, `html`, `rawHtml`, `links`, `json`, `screenshot`), stealth rendering, geo-routing, and CSS include/exclude tags. The event log shows exactly what ran where: Firecrawl scraping the text formats while camoufox renders the screenshot in parallel.
+
+![Fetch tab: Wikipedia article fetched as markdown + links + screenshot, with the per-step event log showing firecrawl and camoufox working in parallel](docs/screenshots/fetch-markdown.png)
 
 Every output format renders in its own tabbed panel with one-click **copy to clipboard** and **file download** (`.md`, `.html`, `.txt`, `.json`, `.png`). Markdown shows the raw text by default with a rendered-preview toggle; the screenshot copy button places the actual PNG on the clipboard.
+
+### Full-page screenshots from the anti-detect browser
+
+The `screenshot` format is captured by the camoufox (or botasaurus) anti-detect browser directly — self-hosted Firecrawl can't produce screenshots, so the gateway routes around it. The result is a full-page PNG rendered in the output panel:
+
+![Screenshot output panel: full-page PNG of the fetched article captured by camoufox, with copy and download buttons](docs/screenshots/fetch-screenshot.png)
+
+### Map a site in seconds
+
+The Map tab discovers a site's URLs without scraping content — sitemap parsing plus subdomain probing plus link discovery — and the progress log shows each discovery source as it lands:
+
+![Map tab: docs.firecrawl.dev mapped with sitemap discovery and subdomain probing events, returning 100 filtered links](docs/screenshots/map-results.png)
+
+### Run history
+
+The **History** tab lists every past run — search, fetch, crawl, and map, including MCP-driven ones — with status, duration, and a summary. Expanding a run reveals its full event timeline and the original request JSON:
+
+![History tab: recent runs across map/fetch/search with the newest run expanded to show its full event timeline](docs/screenshots/history.png)
 
 ## Progress events & run history
 
