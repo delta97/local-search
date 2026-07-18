@@ -65,6 +65,7 @@
   }
   .tab:hover { color: var(--ink); }
   .tab.active { color: var(--amber); background: var(--panel); border-color: var(--line); }
+  .tab .livedot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--amber); margin-left: 6px; vertical-align: 2px; animation: pulse 2.4s ease-in-out infinite; }
 
   .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 0 12px 12px 12px; box-shadow: var(--shadow); padding: 26px; }
   .panel[hidden] { display: none; }
@@ -82,6 +83,9 @@
   input:focus, select:focus, textarea:focus { outline: none; border-color: var(--amber-dim); box-shadow: 0 0 0 3px rgba(245,184,67,.12); }
   ::placeholder { color: #52655c; }
 
+  .fieldnote { font-size: 11px; letter-spacing: .04em; color: var(--red); animation: rise .25s ease both; }
+  .fieldnote[hidden] { display: none; }
+
   .opts { display: flex; gap: 22px; flex-wrap: wrap; align-items: center; }
   .opt { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
   .opt input { accent-color: var(--amber); width: 16px; height: 16px; }
@@ -97,6 +101,8 @@
   .pill:hover { color: var(--ink); border-color: var(--amber-dim); }
   .pill.active { color: var(--amber); border-color: var(--amber-dim); background: rgba(245,184,67,.08); }
   .pill.sm { padding: 3px 9px; font-size: 10px; }
+  .pill.danger { color: var(--red); border-color: rgba(232,112,90,.45); }
+  .pill.danger:hover { color: var(--red); border-color: var(--red); background: rgba(232,112,90,.08); }
   .pill .icon { width: 12px; height: 12px; }
   .optlabel { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; letter-spacing: .09em; text-transform: uppercase; color: var(--muted); }
 
@@ -108,6 +114,14 @@
   button.go:hover { background: #ffca5c; }
   button.go:active { transform: translateY(1px); }
   button.go:disabled { background: var(--amber-dim); cursor: wait; opacity: .7; }
+  /* while a run is in flight the CTA becomes a calm cancel affordance */
+  button.go.go-cancel {
+    background: transparent; color: var(--muted); border: 1px solid var(--line); padding: 0 25px;
+    transition: color .15s, border-color .15s, background .15s;
+  }
+  button.go.go-cancel:hover { background: rgba(232,112,90,.06); color: var(--red); border-color: var(--red); }
+  button.go.go-cancel:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(245,184,67,.12); }
+  button.go.go-cancel:disabled { background: transparent; color: var(--muted); border-color: var(--line); cursor: wait; opacity: .7; }
 
   .status { min-height: 20px; margin-top: 20px; font-size: 13px; color: var(--muted); }
   .status .spin { color: var(--amber); }
@@ -122,6 +136,8 @@
   .step .sstage { color: var(--amber-dim); text-transform: uppercase; font-size: 10.5px; letter-spacing: .08em; min-width: 72px; }
   .step.final { color: var(--ink); }
   .step.errstep, .step.errstep .sstage { color: var(--red); }
+  .step.cancelstep, .step.cancelstep .sstage, .step.cancelstep .sicon { color: var(--muted); }
+  .runnote { margin-top: 8px; font-size: 11px; letter-spacing: .04em; color: var(--muted); animation: rise .25s ease both; }
 
   /* history */
   .hbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 14px; }
@@ -132,6 +148,11 @@
   .hrun .hlabel { font-family: "Fraunces", serif; font-size: 15.5px; color: var(--ink); word-break: break-all; flex: 1; min-width: 200px; }
   .hrun .hmeta { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
   .hrun .hok { color: var(--green); } .hrun .herr { color: var(--red); }
+  .hrun .hlive { color: var(--amber); display: inline-flex; align-items: center; gap: 6px; }
+  .hrun .hcancelled { color: var(--muted); }
+  .hrun .hactions { display: inline-flex; gap: 4px; align-items: center; }
+  .hfoot { margin-top: 14px; display: flex; justify-content: flex-end; align-items: center; gap: 8px; font-size: 11.5px; color: var(--muted); }
+  .hfoot #clearWrap { display: inline-flex; align-items: center; gap: 8px; }
   .hrun .hdetail { display: none; margin-top: 12px; border-top: 1px dashed var(--line); padding-top: 12px; }
   .hrun.open .hdetail { display: block; }
   .hrun .hdetail pre { background: #0c110f; padding: 12px; border-radius: 8px; overflow: auto; font-size: 12px; max-height: 300px; margin: 8px 0 0; }
@@ -397,6 +418,7 @@
       <div class="field">
         <label for="urlList">batch urls · one per line · max 20 (overrides url above)</label>
         <textarea id="urlList" rows="3" placeholder="https://a.com&#10;https://b.com/doc.pdf"></textarea>
+        <div class="fieldnote" id="urlLimitNote" role="status" hidden></div>
       </div>
       <div class="opts">
         <label class="opt"><input type="checkbox" id="mainOnly" checked /> main content only</label>
@@ -514,11 +536,12 @@
       <span class="optlabel"><i data-lucide="history" class="icon"></i> recent runs</span>
       <div class="pills">
         <button type="button" class="pill" id="historyRefresh">refresh</button>
-        <button type="button" class="pill" id="historyClear">clear all</button>
       </div>
     </div>
     <div class="status" id="historyStatus"></div>
     <div class="results" id="historyList"></div>
+    <!-- destructive action lives below the list, away from refresh -->
+    <div class="hfoot" id="historyFoot" hidden><span id="clearWrap"></span></div>
   </section>
 
   <footer>gateway <code>:8088</code> · api <code>/search</code> <code>/fetch</code> <code>/crawl</code> <code>/map</code> <code>/history</code> · mcp tools <code>web_search</code> <code>fetch_page</code> <code>crawl_site</code> <code>map_site</code></footer>
@@ -531,6 +554,7 @@ const esc = s => (s ?? "").replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':
 const SPIN_SVG = `<svg class="icon icon-spin" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>`;
 const CHECK_SVG = `<svg class="icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>`;
 const X_SVG = `<svg class="icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>`;
+const STOP_SVG = `<svg class="icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m4.9 4.9 14.2 14.2"/></svg>`;
 
 // Lucide icon paths, inlined so dynamically injected markup renders reliably
 const lsvg = paths => `<svg class="icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`;
@@ -643,21 +667,25 @@ function renderOutputPanels(el, data, host) {
 
 // tabs
 const TAB_NAMES = ["search", "fetch", "crawl", "map", "history"];
-document.querySelectorAll(".tab").forEach(t => t.onclick = () => {
-  document.querySelectorAll(".tab").forEach(x => x.classList.remove("active"));
-  t.classList.add("active");
-  const tab = t.dataset.tab;
-  TAB_NAMES.forEach(n => { $("#panel-" + n).hidden = tab !== n; });
-  if (tab === "history") loadHistory();
-});
+function openTab(name) {
+  document.querySelectorAll(".tab").forEach(x => x.classList.toggle("active", x.dataset.tab === name));
+  TAB_NAMES.forEach(n => { $("#panel-" + n).hidden = name !== n; });
+  if (name === "history") loadHistory();
+}
+document.querySelectorAll(".tab").forEach(t => t.onclick = () => openTab(t.dataset.tab));
 
-// POST to an SSE endpoint; calls onEvent per progress event, returns the final result
-async function streamPost(url, body, onEvent) {
-  const r = await fetch(url, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) });
+// Stream an SSE endpoint (fresh run POST or /jobs re-attach GET). Calls onMsg
+// per non-terminal message; resolves with the terminal message (result /
+// error / cancelled). Throws only on transport failure.
+async function streamSSE(method, url, body, onMsg, signal) {
+  const r = await fetch(url, {
+    method, signal,
+    ...(body ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {}),
+  });
   if (!r.ok) throw new Error(await r.text());
   const reader = r.body.getReader();
   const dec = new TextDecoder();
-  let buf = "", final = null;
+  let buf = "";
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -668,13 +696,11 @@ async function streamPost(url, body, onEvent) {
       const line = chunk.split("\n").find(l => l.startsWith("data: "));
       if (!line) continue;
       const msg = JSON.parse(line.slice(6));
-      if (msg.type === "result") final = msg.data;
-      else if (msg.type === "error") throw new Error(msg.error);
-      else onEvent(msg);
+      if (msg.type === "result" || msg.type === "error" || msg.type === "cancelled") return msg;
+      onMsg(msg);
     }
   }
-  if (final === null) throw new Error("stream ended without a result");
-  return final;
+  throw new Error("stream ended without a result");
 }
 
 // live step log rendered into a .status element
@@ -696,6 +722,10 @@ function makeStepLog(el) {
     fail(html) {
       if (current) { current.classList.add("errstep"); current.querySelector(".sicon").innerHTML = X_SVG; current = null; }
       const d = document.createElement("div"); d.className = "step final errstep"; d.innerHTML = `<span class="sicon">${X_SVG}</span><span>${html}</span>`; list.appendChild(d);
+    },
+    cancelled(html) {  // calm final state — a cancelled run is not an error
+      if (current) { current.classList.add("cancelstep"); current.querySelector(".sicon").innerHTML = STOP_SVG; current = null; }
+      const d = document.createElement("div"); d.className = "step final cancelstep"; d.innerHTML = `<span class="sicon">${STOP_SVG}</span><span>${html}</span>`; list.appendChild(d);
     },
   };
 }
@@ -823,36 +853,126 @@ document.querySelectorAll(".view-pill").forEach(p => p.onclick = () => {
   p.dataset.view === "json" ? renderSearchJson(lastSearchData) : renderSearchCards(lastSearchData);
 });
 
-// search
-$("#searchForm").onsubmit = async e => {
-  e.preventDefault();
-  const q = $("#q").value.trim(); if (!q) return;
-  const btn = e.target.querySelector("button"); btn.disabled = true;
-  $("#searchResults").innerHTML = "";
-  $("#viewToggle").style.display = "none";
-  const enrich = $("#fetchContent").checked;
-  const steps = makeStepLog($("#searchStatus"));
+// ── run control: every run is a server-side job — the CTA becomes a cancel
+// affordance while in flight, and a run survives refresh (re-attach from
+// History). Closing the tab does NOT cancel; only the cancel button does. ──
+
+function searchDone(d, steps, req) {
+  const tr = req.time_range;
+  steps.done(`${d.result_count} result${d.result_count===1?"":"s"} for “${esc(req.query ?? d.query ?? "")}”${tr?` · past ${tr}`:""}${d.answer?" · answer ✓":""}`);
+  lastSearchData = d;
+  $("#viewToggle").style.display = "flex";
+  document.querySelectorAll(".view-pill").forEach(x => x.classList.toggle("active", x.dataset.view === "cards"));
+  renderSearchCards(d);
+}
+
+const RUNNERS = {
+  search: { form: "#searchForm", status: "#searchStatus",
+            clear() { $("#searchResults").innerHTML = ""; $("#viewToggle").style.display = "none"; },
+            done: searchDone },
+  fetch:  { form: "#fetchForm", status: "#fetchStatus",
+            clear() { $("#fetchResult").innerHTML = ""; }, done: fetchDone },
+  crawl:  { form: "#crawlForm", status: "#crawlStatus",
+            clear() { $("#crawlResults").innerHTML = ""; }, done: crawlDone },
+  map:    { form: "#mapForm", status: "#mapStatus",
+            clear() { $("#mapResults").innerHTML = ""; }, done: mapDone },
+};
+const runnerBtn = kind => document.querySelector(RUNNERS[kind].form + " button.go");
+
+async function updateRunningTabDot() {
+  let n = 0;
+  try { n = ((await (await fetch("/jobs")).json()).jobs || []).length; } catch {}
+  const tab = document.querySelector('.tab[data-tab="history"]');
+  tab.querySelector(".livedot")?.remove();
+  if (n) {
+    const dot = document.createElement("span");
+    dot.className = "livedot";
+    dot.setAttribute("aria-label", `${n} run${n===1?"":"s"} in progress`);
+    tab.appendChild(dot);
+  }
+}
+
+async function driveRun(kind, method, url, body) {
+  const R = RUNNERS[kind];
+  const btn = runnerBtn(kind);
+  if (btn.dataset.running) return;
+  R.clear();
+  const steps = makeStepLog($(R.status));
+  const ctrl = new AbortController();
+  let jobId = null, request = body || {};
+  const origLabel = btn.textContent;
+  btn.dataset.running = "1";
+  btn.disabled = true;
+
+  const armCancel = () => {
+    btn.classList.add("go-cancel");
+    btn.type = "button";
+    btn.textContent = "cancel";
+    btn.setAttribute("aria-label", `cancel this ${kind} run`);
+    btn.disabled = false;
+    btn.onclick = async () => {
+      btn.disabled = true; btn.textContent = "cancelling…";
+      try { await fetch(`/jobs/${jobId}/cancel`, { method: "POST" }); }
+      catch { ctrl.abort(); }  // gateway unreachable — at least stop the local stream
+    };
+  };
+  const restoreBtn = () => {
+    btn.classList.remove("go-cancel");
+    btn.type = "submit"; btn.onclick = null; btn.textContent = origLabel;
+    btn.removeAttribute("aria-label"); btn.disabled = false;
+    delete btn.dataset.running;
+  };
+  // jobs survive refresh, so no blocking unload dialog — just a quiet note
+  const noteTimer = setTimeout(() => {
+    if (!btn.dataset.running) return;
+    const note = document.createElement("div");
+    note.className = "runnote";
+    note.textContent = "run continues in history if you leave this page";
+    $(R.status).appendChild(note);
+  }, 6000);
+
   try {
-    const answerMode = getAnswerMode();
-    const body = { query: q, max_results: +$("#max").value, fetch_content: enrich,
-                   fetch_top: +$("#fetchTop").value, time_range: getTimeRange(),
-                   include_domains: csvList("#includeDomains"),
-                   exclude_domains: csvList("#excludeDomains"),
-                   include_answer: answerMode || false };
-    if (enrich) {
-      const sfmts = [...document.querySelectorAll(".sfmt:checked")].map(c => c.value);
-      body.fetch_formats = sfmts.length ? sfmts : ["markdown"];
-    }
-    const d = await streamPost("/search/stream", body, ev => steps.add(ev));
-    const tr = getTimeRange();
-    steps.done(`${d.result_count} result${d.result_count===1?"":"s"} for “${esc(q)}”${tr?` · past ${tr}`:""}${d.answer?" · answer ✓":""}`);
-    lastSearchData = d;
-    $("#viewToggle").style.display = "flex";
-    document.querySelectorAll(".view-pill").forEach(x => x.classList.toggle("active", x.dataset.view === "cards"));
-    renderSearchCards(d);
+    const terminal = await streamSSE(method, url, body, msg => {
+      if (msg.type === "job") { jobId = msg.id; if (msg.request) request = msg.request; armCancel(); updateRunningTabDot(); }
+      else if (msg.type === "event") steps.add(msg);
+    }, ctrl.signal);
+    if (terminal.type === "result") R.done(terminal.data, steps, request);
+    else if (terminal.type === "cancelled") steps.cancelled(`cancelled after ${(terminal.t_ms/1000).toFixed(1)}s${terminal.progress?` — ${esc(terminal.progress)}`:""}`);
+    else steps.fail(`error: ${esc(String(terminal.error))}`);
   } catch (err) {
-    steps.fail(`error: ${esc(String(err.message||err))}`);
-  } finally { btn.disabled = false; }
+    if (err.name === "AbortError") steps.cancelled("stream closed — if the run is still going it shows under history");
+    else steps.fail(`error: ${esc(String(err.message||err))}`);
+  } finally {
+    clearTimeout(noteTimer);
+    $(R.status).querySelector(".runnote")?.remove();
+    restoreBtn();
+    updateRunningTabDot();
+  }
+}
+
+function attachRun(kind, id) {
+  if (!RUNNERS[kind]) return;
+  openTab(kind);
+  if (runnerBtn(kind).dataset.running) return;  // already watching a run here
+  driveRun(kind, "GET", `/jobs/${id}/stream`, null);
+}
+
+// search
+$("#searchForm").onsubmit = e => {
+  e.preventDefault();
+  if (runnerBtn("search").dataset.running) return;
+  const q = $("#q").value.trim(); if (!q) return;
+  const enrich = $("#fetchContent").checked;
+  const body = { query: q, max_results: +$("#max").value, fetch_content: enrich,
+                 fetch_top: +$("#fetchTop").value, time_range: getTimeRange(),
+                 include_domains: csvList("#includeDomains"),
+                 exclude_domains: csvList("#excludeDomains"),
+                 include_answer: getAnswerMode() || false };
+  if (enrich) {
+    const sfmts = [...document.querySelectorAll(".sfmt:checked")].map(c => c.value);
+    body.fetch_formats = sfmts.length ? sfmts : ["markdown"];
+  }
+  driveRun("search", "POST", "/search/stream", body);
 };
 
 // per-page result cards, reused by batch fetch and crawl (each `page` is a
@@ -897,118 +1017,118 @@ function renderPageCards(container, pages, failed) {
 }
 
 // fetch (single url or batch)
-$("#fetchForm").onsubmit = async e => {
+function fetchDone(d, steps, req) {
+  if (d.results) {  // batch
+    steps.done(`${d.result_count} fetched · ${d.failed_count} failed`);
+    $("#fetchResult").innerHTML = `<div class="head"><div><h2>batch fetch</h2>
+      <div class="u">${d.result_count} of ${d.result_count + d.failed_count} succeeded</div></div>
+      <span class="badge">fmt: ${esc((req.formats||["markdown"]).join(", "))}</span></div>
+      <div class="results" id="batchResults"></div>`;
+    renderPageCards($("#batchResults"), d.results, d.failed_results);
+  } else {  // single
+    const mdLen = (d.markdown||"").length;
+    const fmtList = (d.formats||["markdown"]).join(", ");
+    steps.done(`HTTP ${d.status_code ?? "?"} · formats: ${esc(fmtList)}${d.is_pdf?` · pdf ${d.page_count} pages`:''}${mdLen?` · ${mdLen.toLocaleString()} chars markdown`:''}${d.truncated?` (truncated @ ${d.truncated_at})`:''}${d.pdf_note?` · <span style="color:var(--amber)">${esc(String(d.pdf_note))}</span>`:''}${d.screenshot_note?` · <span style="color:var(--amber)">${esc(String(d.screenshot_note))}</span>`:''}${d.screenshot_error?` · <span class="err">screenshot failed: ${esc(String(d.screenshot_error))}</span>`:''}`);
+    const bits = [];
+    if (d.is_pdf) bits.push(`<span class="badge">pdf · ${d.page_count} pages</span>`);
+    if (req.stealth) bits.push('<span class="badge">stealth</span>');
+    bits.push(`<span class="badge">fmt: ${esc(fmtList)}</span>`);
+    if (req.location) bits.push(`<span class="badge">geo: ${esc(req.location)}</span>`);
+    $("#fetchResult").innerHTML = `<div class="head">
+        <div><h2>${esc(d.title)||"(untitled)"}</h2><div class="u">${esc(d.url)}</div></div>
+        ${bits.join("")}</div>
+      ${d.description?`<p class="snippet" style="margin:0 0 14px;color:var(--muted)">${esc(d.description)}</p>`:""}
+      <div id="fetchPanels"></div>`;
+    renderOutputPanels($("#fetchPanels"), d, hostOf(d.url));
+  }
+}
+
+// batch limit: never slice silently — say what will run
+const batchUrlList = () => $("#urlList").value.split("\n").map(s => s.trim()).filter(Boolean);
+function updateUrlLimitNote() {
+  const n = batchUrlList().length;
+  const note = $("#urlLimitNote");
+  note.hidden = n <= 20;
+  if (n > 20) note.textContent = `20 of ${n} urls will run — batch limit is 20`;
+}
+$("#urlList").addEventListener("input", updateUrlLimitNote);
+
+$("#fetchForm").onsubmit = e => {
   e.preventDefault();
-  const batchUrls = $("#urlList").value.split("\n").map(s => s.trim()).filter(Boolean);
+  if (runnerBtn("fetch").dataset.running) return;
+  const batchUrls = batchUrlList();
   const url = $("#url").value.trim();
   if (!batchUrls.length && !url) return;
-  const btn = e.target.querySelector("button"); btn.disabled = true;
-  $("#fetchResult").innerHTML = "";
-  const stealth = $("#stealth").checked;
+  updateUrlLimitNote();
   const formats = [...document.querySelectorAll(".fmt:checked")].map(c => c.value);
   const waitFor = +$("#waitFor").value || 0;
   const location = $("#location").value.trim() || null;
   const includeTags = csvList("#includeTags");
   const excludeTags = csvList("#excludeTags");
-  const steps = makeStepLog($("#fetchStatus"));
-  try {
-    const body = { formats, only_main_content: $("#mainOnly").checked, stealth };
-    if (batchUrls.length) body.urls = batchUrls.slice(0, 20); else body.url = url;
-    if (waitFor) body.wait_for = waitFor;
-    if (location) body.location = location;
-    if (includeTags) body.include_tags = includeTags;
-    if (excludeTags) body.exclude_tags = excludeTags;
-    const d = await streamPost("/fetch/stream", body, ev => steps.add(ev));
-
-    if (d.results) {  // batch
-      steps.done(`${d.result_count} fetched · ${d.failed_count} failed`);
-      $("#fetchResult").innerHTML = `<div class="head"><div><h2>batch fetch</h2>
-        <div class="u">${d.result_count} of ${d.result_count + d.failed_count} succeeded</div></div>
-        <span class="badge">fmt: ${esc(formats.join(", "))}</span></div>
-        <div class="results" id="batchResults"></div>`;
-      renderPageCards($("#batchResults"), d.results, d.failed_results);
-    } else {  // single
-      const mdLen = (d.markdown||"").length;
-      const fmtList = (d.formats||["markdown"]).join(", ");
-      steps.done(`HTTP ${d.status_code ?? "?"} · formats: ${esc(fmtList)}${d.is_pdf?` · pdf ${d.page_count} pages`:''}${mdLen?` · ${mdLen.toLocaleString()} chars markdown`:''}${d.truncated?` (truncated @ ${d.truncated_at})`:''}${d.pdf_note?` · <span style="color:var(--amber)">${esc(String(d.pdf_note))}</span>`:''}${d.screenshot_note?` · <span style="color:var(--amber)">${esc(String(d.screenshot_note))}</span>`:''}${d.screenshot_error?` · <span class="err">screenshot failed: ${esc(String(d.screenshot_error))}</span>`:''}`);
-      const bits = [];
-      if (d.is_pdf) bits.push(`<span class="badge">pdf · ${d.page_count} pages</span>`);
-      if (stealth) bits.push('<span class="badge">stealth</span>');
-      bits.push(`<span class="badge">fmt: ${esc(fmtList)}</span>`);
-      if (location) bits.push(`<span class="badge">geo: ${esc(location)}</span>`);
-      $("#fetchResult").innerHTML = `<div class="head">
-          <div><h2>${esc(d.title)||"(untitled)"}</h2><div class="u">${esc(d.url)}</div></div>
-          ${bits.join("")}</div>
-        ${d.description?`<p class="snippet" style="margin:0 0 14px;color:var(--muted)">${esc(d.description)}</p>`:""}
-        <div id="fetchPanels"></div>`;
-      renderOutputPanels($("#fetchPanels"), d, hostOf(d.url));
-    }
-  } catch (err) {
-    steps.fail(`error: ${esc(String(err.message||err))}`);
-  } finally { btn.disabled = false; }
+  const body = { formats, only_main_content: $("#mainOnly").checked, stealth: $("#stealth").checked };
+  if (batchUrls.length) body.urls = batchUrls.slice(0, 20); else body.url = url;
+  if (waitFor) body.wait_for = waitFor;
+  if (location) body.location = location;
+  if (includeTags) body.include_tags = includeTags;
+  if (excludeTags) body.exclude_tags = excludeTags;
+  driveRun("fetch", "POST", "/fetch/stream", body);
 };
 
 // crawl
-$("#crawlForm").onsubmit = async e => {
+function crawlDone(d, steps) {
+  const warn = d.partial ? ` <span style="color:var(--amber)">(${esc(d.status)}${d.error?`: ${esc(String(d.error))}`:""})</span>` : "";
+  steps.done(`${d.status} · ${d.page_count}${d.total?`/${d.total}`:""} pages${warn}`);
+  const head = `<div class="head"><div><h2>crawl of ${esc(hostOf(d.url))}</h2>
+    <div class="u">${esc(d.url)}</div></div>
+    <span class="badge${d.partial?'" style="color:var(--amber);border-color:var(--amber-dim)':''}">${esc(d.status)} · ${d.page_count} pages</span></div>`;
+  $("#crawlResults").innerHTML = head + `<div class="results" id="crawlPages"></div>`;
+  renderPageCards($("#crawlPages"), d.pages, []);
+}
+
+$("#crawlForm").onsubmit = e => {
   e.preventDefault();
+  if (runnerBtn("crawl").dataset.running) return;
   const url = $("#crawlUrl").value.trim(); if (!url) return;
-  const btn = e.target.querySelector("button"); btn.disabled = true;
-  $("#crawlResults").innerHTML = "";
   const formats = [...document.querySelectorAll(".cfmt:checked")].map(c => c.value);
-  const steps = makeStepLog($("#crawlStatus"));
-  try {
-    const body = {
-      url,
-      limit: +$("#crawlLimit").value || 25,
-      timeout_s: +$("#crawlTimeout").value || 300,
-      formats: formats.length ? formats : ["markdown"],
-      crawl_entire_domain: $("#crawlEntireDomain").checked,
-      allow_subdomains: $("#crawlSubdomains").checked,
-      include_paths: csvList("#crawlInclude"),
-      exclude_paths: csvList("#crawlExclude"),
-    };
-    const depth = $("#crawlDepth").value.trim();
-    if (depth !== "") body.max_depth = +depth;
-    const d = await streamPost("/crawl/stream", body, ev => steps.add(ev));
-    const warn = d.partial ? ` <span style="color:var(--amber)">(${esc(d.status)}${d.error?`: ${esc(String(d.error))}`:""})</span>` : "";
-    steps.done(`${d.status} · ${d.page_count}${d.total?`/${d.total}`:""} pages${warn}`);
-    const head = `<div class="head"><div><h2>crawl of ${esc(hostOf(d.url))}</h2>
-      <div class="u">${esc(d.url)}</div></div>
-      <span class="badge${d.partial?'" style="color:var(--amber);border-color:var(--amber-dim)':''}">${esc(d.status)} · ${d.page_count} pages</span></div>`;
-    $("#crawlResults").innerHTML = head + `<div class="results" id="crawlPages"></div>`;
-    renderPageCards($("#crawlPages"), d.pages, []);
-  } catch (err) {
-    steps.fail(`error: ${esc(String(err.message||err))}`);
-  } finally { btn.disabled = false; }
+  const body = {
+    url,
+    limit: +$("#crawlLimit").value || 25,
+    timeout_s: +$("#crawlTimeout").value || 300,
+    formats: formats.length ? formats : ["markdown"],
+    crawl_entire_domain: $("#crawlEntireDomain").checked,
+    allow_subdomains: $("#crawlSubdomains").checked,
+    include_paths: csvList("#crawlInclude"),
+    exclude_paths: csvList("#crawlExclude"),
+  };
+  const depth = $("#crawlDepth").value.trim();
+  if (depth !== "") body.max_depth = +depth;
+  driveRun("crawl", "POST", "/crawl/stream", body);
 };
 
 // map
-$("#mapForm").onsubmit = async e => {
+function mapDone(d, steps) {
+  steps.done(`${d.link_count} link${d.link_count===1?"":"s"} discovered`);
+  const urls = d.links.map(l => l.url);
+  $("#mapResults").innerHTML = `<div class="card">
+    <div class="head" style="margin-bottom:8px"><div><h2>${esc(hostOf(d.url))}</h2>
+      <div class="u">${d.link_count} links</div></div></div>
+    <div id="mapPanels"></div></div>`;
+  renderOutputPanels($("#mapPanels"), { links: urls }, hostOf(d.url));
+}
+
+$("#mapForm").onsubmit = e => {
   e.preventDefault();
+  if (runnerBtn("map").dataset.running) return;
   const url = $("#mapUrl").value.trim(); if (!url) return;
-  const btn = e.target.querySelector("button"); btn.disabled = true;
-  $("#mapResults").innerHTML = "";
-  const steps = makeStepLog($("#mapStatus"));
-  try {
-    const body = {
-      url,
-      limit: +$("#mapLimit").value || 100,
-      include_subdomains: $("#mapSubdomains").checked,
-      sitemap: getSitemapMode() || "include",
-    };
-    const search = $("#mapSearch").value.trim();
-    if (search) body.search = search;
-    const d = await streamPost("/map/stream", body, ev => steps.add(ev));
-    steps.done(`${d.link_count} link${d.link_count===1?"":"s"} discovered`);
-    const urls = d.links.map(l => l.url);
-    $("#mapResults").innerHTML = `<div class="card">
-      <div class="head" style="margin-bottom:8px"><div><h2>${esc(hostOf(d.url))}</h2>
-        <div class="u">${d.link_count} links</div></div></div>
-      <div id="mapPanels"></div></div>`;
-    renderOutputPanels($("#mapPanels"), { links: urls }, hostOf(d.url));
-  } catch (err) {
-    steps.fail(`error: ${esc(String(err.message||err))}`);
-  } finally { btn.disabled = false; }
+  const body = {
+    url,
+    limit: +$("#mapLimit").value || 100,
+    include_subdomains: $("#mapSubdomains").checked,
+    sitemap: getSitemapMode() || "include",
+  };
+  const search = $("#mapSearch").value.trim();
+  if (search) body.search = search;
+  driveRun("map", "POST", "/map/stream", body);
 };
 
 // ── history ──
@@ -1020,13 +1140,25 @@ const fmtWhen = iso => {
   return d.toLocaleString();
 };
 
+const STATUS_HTML = r =>
+  r.status === "ok" ? `<span class="hmeta hok">ok</span>` :
+  r.status === "running" ? `<span class="hmeta hlive">${SPIN_SVG} running</span>` :
+  r.status === "cancelled" ? `<span class="hmeta hcancelled">cancelled</span>` :
+  `<span class="hmeta herr">error</span>`;
+
+let historyDeletable = 0;
+
 async function loadHistory() {
   $("#historyStatus").innerHTML = `<span class="spin">${SPIN_SVG} loading…</span>`;
   try {
     const d = await (await fetch("/history?limit=50")).json();
     $("#historyStatus").innerHTML = d.runs.length ? "" : "no runs yet — searches and fetches will appear here.";
+    historyDeletable = d.runs.filter(r => r.status !== "running").length;
+    $("#historyFoot").hidden = !historyDeletable;
+    resetClearAll();
     $("#historyList").innerHTML = d.runs.map(r => {
       const s = r.summary || {};
+      const running = r.status === "running";
       const bits = [];
       if (r.kind === "search" && s.result_count != null) bits.push(`${s.result_count} results`);
       if (s.scraped) bits.push(`${s.scraped} scraped`);
@@ -1036,16 +1168,23 @@ async function loadHistory() {
       if (r.kind === "fetch" && !s.batch && s.markdown_chars) bits.push(`${(+s.markdown_chars).toLocaleString()} chars`);
       if (r.kind === "fetch" && s.pdf_pages) bits.push(`pdf · ${s.pdf_pages} pages`);
       if (r.kind === "fetch" && !s.batch && s.screenshot) bits.push("screenshot");
-      if (r.kind === "crawl") bits.push(`${s.page_count}${s.total?`/${s.total}`:""} pages${s.status && s.status!=="completed"?` · ${s.status}`:""}`);
+      if (r.kind === "crawl" && s.page_count != null) bits.push(`${s.page_count}${s.total?`/${s.total}`:""} pages${s.status && s.status!=="completed"?` · ${s.status}`:""}`);
       if (r.kind === "map" && s.link_count != null) bits.push(`${s.link_count} links`);
-      return `<div class="card hrun" data-id="${r.id}">
+      if (s.progress) bits.push(s.progress);
+      const actions = running
+        ? `<span class="hactions">
+             <button type="button" class="pill sm hattach" aria-label="re-attach to this run's live log">attach</button>
+             <button type="button" class="pill sm danger hcancel" aria-label="cancel this run">cancel</button>
+           </span>`
+        : `<span class="hactions"><button type="button" class="hdel" title="delete run" aria-label="delete run">${X_SVG}</button></span>`;
+      return `<div class="card hrun" data-id="${r.id}" data-kind="${esc(r.kind)}">
         <div class="hrow">
           <span class="hkind">${esc(r.kind)}</span>
           <span class="hlabel">${esc(r.label||"")}</span>
-          <span class="hmeta ${r.status==="ok"?"hok":"herr"}">${r.status==="ok"?"ok":"error"}</span>
+          ${STATUS_HTML(r)}
           ${bits.length?`<span class="hmeta">${esc(bits.join(" · "))}</span>`:""}
-          <span class="hmeta">${(r.duration_ms/1000).toFixed(1)}s · ${fmtWhen(r.started_at)}</span>
-          <button class="hdel" title="delete run">${X_SVG}</button>
+          <span class="hmeta">${r.duration_ms!=null?`${(r.duration_ms/1000).toFixed(1)}s${running?" so far":""} · `:""}${fmtWhen(r.started_at)}</span>
+          ${actions}
         </div>
         ${r.error?`<div class="hmeta" style="margin-top:6px"><span class="herr">${esc(r.error)}</span></div>`:""}
         <div class="hdetail"></div>
@@ -1054,38 +1193,88 @@ async function loadHistory() {
   } catch (err) {
     $("#historyStatus").innerHTML = `<span class="err">error: ${esc(String(err.message||err))}</span>`;
   }
+  updateRunningTabDot();
 }
 
 $("#historyList").addEventListener("click", async e => {
   const card = e.target.closest(".hrun");
   if (!card) return;
-  if (e.target.closest(".hdel")) {
-    await fetch(`/history/${card.dataset.id}`, { method: "DELETE" });
-    card.remove();
+  const id = card.dataset.id;
+  if (e.target.closest(".hattach")) { attachRun(card.dataset.kind, id); return; }
+  if (e.target.closest(".hcancel")) {
+    const b = e.target.closest(".hcancel");
+    b.disabled = true; b.textContent = "cancelling…";
+    try { await fetch(`/jobs/${id}/cancel`, { method: "POST" }); } catch {}
+    setTimeout(loadHistory, 600);
     return;
   }
+  // per-row delete: small inline confirm in place of the ✕
+  if (e.target.closest(".hdelyes")) {
+    await fetch(`/history/${id}`, { method: "DELETE" });
+    card.remove();
+    historyDeletable = Math.max(0, historyDeletable - 1);
+    $("#historyFoot").hidden = !historyDeletable;
+    resetClearAll();
+    return;
+  }
+  if (e.target.closest(".hdelno")) { revertRowDelete(card); return; }
+  if (e.target.closest(".hdel")) {
+    const wrap = e.target.closest(".hactions");
+    wrap.dataset.orig = wrap.innerHTML;
+    wrap.innerHTML = `<button type="button" class="pill sm danger hdelyes" aria-label="confirm delete">delete</button>
+      <button type="button" class="pill sm hdelno" aria-label="keep run">keep</button>`;
+    clearTimeout(+wrap.dataset.timer || 0);
+    wrap.dataset.timer = setTimeout(() => revertRowDelete(card), 5000);
+    return;
+  }
+  if (e.target.closest(".hactions")) return;
   if (card.classList.toggle("open")) {
     const detail = card.querySelector(".hdetail");
     if (!detail.dataset.loaded) {
       detail.innerHTML = `<span class="spin">${SPIN_SVG} loading…</span>`;
       try {
-        const d = await (await fetch(`/history/${card.dataset.id}`)).json();
+        const d = await (await fetch(`/history/${id}`)).json();
         const timeline = (d.events||[]).map(ev =>
           `<div class="step donestep"><span class="st">+${(ev.t_ms/1000).toFixed(1)}s</span><span class="sstage">${esc(ev.stage)}</span><span>${esc(ev.message)}</span></div>`).join("");
         detail.innerHTML = `<div class="steps">${timeline||"<em>no events recorded</em>"}</div>
           <details style="margin-top:10px"><summary style="cursor:pointer;color:var(--amber-dim);font-size:12px">request + summary json</summary>
           <pre><code>${esc(JSON.stringify({request: d.request, summary: d.summary}, null, 2))}</code></pre></details>`;
-        detail.dataset.loaded = "1";
+        if (d.status !== "running") detail.dataset.loaded = "1";  // keep live runs re-fetchable
       } catch (err) { detail.innerHTML = `<span class="err">error: ${esc(String(err.message||err))}</span>`; }
     }
   }
 });
 
+function revertRowDelete(card) {
+  const wrap = card.querySelector(".hactions");
+  if (wrap && wrap.dataset.orig) { clearTimeout(+wrap.dataset.timer || 0); wrap.innerHTML = wrap.dataset.orig; delete wrap.dataset.orig; }
+}
+
 $("#historyRefresh").onclick = loadHistory;
-$("#historyClear").onclick = async () => {
-  await fetch("/history", { method: "DELETE" });
-  loadHistory();
-};
+
+// clear-all: two-step inline confirm, in place — never window.confirm
+let clearAllTimer = null;
+function resetClearAll() {
+  clearTimeout(clearAllTimer);
+  $("#clearWrap").innerHTML = `<button type="button" class="pill" id="historyClear">clear all</button>`;
+  $("#historyClear").onclick = armClearAll;
+}
+function armClearAll() {
+  clearTimeout(clearAllTimer);
+  $("#clearWrap").innerHTML = `<span class="hmeta">delete ${historyDeletable} run${historyDeletable===1?"":"s"}?</span>
+    <button type="button" class="pill sm danger" id="clearConfirm" aria-label="confirm clearing history">confirm</button>
+    <button type="button" class="pill sm" id="clearKeep" aria-label="keep history">keep</button>`;
+  $("#clearConfirm").onclick = async () => {
+    await fetch("/history", { method: "DELETE" });
+    loadHistory();
+  };
+  $("#clearKeep").onclick = resetClearAll;
+  clearAllTimer = setTimeout(resetClearAll, 6000);  // quietly revert if left alone
+}
+resetClearAll();
+
+// surface runs already in flight (e.g. after a refresh mid-run)
+updateRunningTabDot();
 
 lucide.createIcons();
 </script>
