@@ -14,10 +14,18 @@ Endpoints:
   POST /crawl/stream        — same, with SSE progress ticks while pages are crawled
   POST /map                 — discover a site's URLs via Firecrawl map (no scraping)
   POST /map/stream          — same, SSE
-  GET  /history             — recent run history (SQLite-backed)
+  GET  /history             — recent run history (SQLite-backed; running jobs included)
   GET  /history/{id}        — one run with its full event timeline + request
-  DELETE /history/{id}      — delete one run
-  DELETE /history           — clear history
+  DELETE /history/{id}      — delete one run (409 while it is still running)
+  DELETE /history           — clear history (running jobs are kept)
+  GET  /jobs                — currently running jobs
+  GET  /jobs/{id}/stream    — re-attach to a job: replay its events, then tail live (SSE)
+  POST /jobs/{id}/cancel    — cancel a running job (stops upstream work where possible)
+
+Runs are first-class jobs: every run gets a history row at start (status
+"running") and an in-memory Job entry that buffers progress events and fans
+them out to any number of SSE subscribers. Closing or refreshing the client
+does NOT cancel a job — cancellation is explicit via POST /jobs/{id}/cancel.
 """
 
 import asyncio
@@ -205,18 +213,21 @@ class RunLog:
         self.started_at = datetime.now(timezone.utc)
         self.t0 = time.monotonic()
         self.events: list[dict[str, Any]] = []
-        self.queue: asyncio.Queue | None = None
+        self.on_event = None  # live fan-out to job subscribers (set by Job)
+        self.progress: str | None = None  # short human progress, e.g. "12 pages fetched"
+        self.fc_crawl_id: str | None = None  # upstream Firecrawl crawl job, for cancel
 
     def emit(self, stage: str, message: str):
         ev = {
+            "i": len(self.events),  # sequence number, lets re-attaching clients dedupe
             "t_ms": int((time.monotonic() - self.t0) * 1000),
             "stage": stage,
             "message": message,
         }
         self.events.append(ev)
         logger.info("[%s %r] %s: %s", self.kind, self.label, stage, message)
-        if self.queue is not None:
-            self.queue.put_nowait({"type": "event", **ev})
+        if self.on_event is not None:
+            self.on_event({"type": "event", **ev})
 
     @property
     def duration_ms(self) -> int:
@@ -242,6 +253,11 @@ def _history_connect() -> sqlite3.Connection:
             events TEXT
         )"""
     )
+    # Runs left "running" by a previous process were interrupted by a restart.
+    conn.execute(
+        "UPDATE runs SET status = 'error', error = 'interrupted — gateway restarted mid-run'"
+        " WHERE status = 'running'"
+    )
     conn.commit()
     return conn
 
@@ -250,32 +266,90 @@ _db = _history_connect()
 _db_lock = asyncio.Lock()
 
 
-async def save_run(
+async def _insert_running(log: RunLog, request: dict[str, Any]) -> int:
+    """Record a run the moment it starts, so it shows up in /history as running."""
+
+    def _ins():
+        cur = _db.execute(
+            "INSERT INTO runs (kind, label, status, started_at, request, summary, events)"
+            " VALUES (?,?,?,?,?,?,?)",
+            (log.kind, log.label, "running", log.started_at.isoformat(),
+             json.dumps(request), "{}", "[]"),
+        )
+        _db.commit()
+        return cur.lastrowid
+
+    async with _db_lock:
+        return await asyncio.to_thread(_ins)
+
+
+async def _finish_run(
+    run_id: int,
     log: RunLog,
-    request: dict[str, Any],
     status: str,
     summary: dict[str, Any] | None = None,
     error: str | None = None,
 ):
-    row = (
-        log.kind, log.label, status, error,
-        log.started_at.isoformat(), log.duration_ms,
-        json.dumps(request), json.dumps(summary or {}), json.dumps(log.events),
-    )
-
-    def _insert():
+    def _upd():
         _db.execute(
-            "INSERT INTO runs (kind, label, status, error, started_at, duration_ms,"
-            " request, summary, events) VALUES (?,?,?,?,?,?,?,?,?)",
-            row,
+            "UPDATE runs SET status = ?, error = ?, duration_ms = ?, summary = ?, events = ?"
+            " WHERE id = ?",
+            (status, error, log.duration_ms, json.dumps(summary or {}),
+             json.dumps(log.events), run_id),
         )
         _db.commit()
 
     try:
         async with _db_lock:
-            await asyncio.to_thread(_insert)
+            await asyncio.to_thread(_upd)
     except Exception:
         logger.exception("failed to record run history")
+
+
+# ── Job registry: live runs that survive client disconnects ──
+
+class Job:
+    """A live run: in-memory event buffer + subscriber fan-out. The history
+    row (inserted at start, finalized at end) is the durable record."""
+
+    def __init__(self, run_id: int, log: RunLog, request: dict[str, Any]):
+        self.id = run_id
+        self.log = log
+        self.request = request
+        self.task: asyncio.Task | None = None
+        self.subscribers: set[asyncio.Queue] = set()
+        self.status = "running"
+        self.terminal: dict[str, Any] | None = None  # final SSE message
+
+    def publish(self, msg: dict[str, Any]):
+        for q in list(self.subscribers):
+            q.put_nowait(msg)
+
+    def finish(self, msg: dict[str, Any], status: str):
+        self.status = status
+        self.terminal = msg
+        self.publish(msg)
+
+
+JOBS: dict[int, Job] = {}
+JOB_LINGER_S = 300  # keep finished jobs attachable for a while after they end
+
+
+async def _create_job(kind: str, label: str, request_payload: dict[str, Any]) -> Job:
+    log = RunLog(kind, label)
+    run_id = await _insert_running(log, request_payload)
+    job = Job(run_id, log, request_payload)
+    log.on_event = job.publish
+    JOBS[run_id] = job
+    return job
+
+
+def _reap_later(job: Job):
+    async def _reap():
+        await asyncio.sleep(JOB_LINGER_S)
+        JOBS.pop(job.id, None)
+
+    asyncio.create_task(_reap())
 
 
 def _row_to_run(row: sqlite3.Row, full: bool) -> dict[str, Any]:
@@ -308,7 +382,15 @@ async def history_list(limit: int = 50, offset: int = 0):
 
     async with _db_lock:
         rows = await asyncio.to_thread(_q)
-    return {"runs": [_row_to_run(r, full=False) for r in rows]}
+    runs = [_row_to_run(r, full=False) for r in rows]
+    # Patch running rows with live progress from the in-memory registry.
+    for run in runs:
+        job = JOBS.get(run["id"])
+        if run["status"] == "running" and job is not None:
+            run["duration_ms"] = job.log.duration_ms
+            run["event_count"] = len(job.log.events)
+            run["live"] = True
+    return {"runs": runs}
 
 
 @app.get("/history/{run_id}")
@@ -321,11 +403,21 @@ async def history_get(run_id: int):
         row = await asyncio.to_thread(_q)
     if row is None:
         raise HTTPException(status_code=404, detail=f"No run with id {run_id}")
-    return _row_to_run(row, full=True)
+    out = _row_to_run(row, full=True)
+    job = JOBS.get(run_id)
+    if out["status"] == "running" and job is not None:
+        out["duration_ms"] = job.log.duration_ms
+        out["events"] = list(job.log.events)
+        out["live"] = True
+    return out
 
 
 @app.delete("/history/{run_id}")
 async def history_delete(run_id: int):
+    job = JOBS.get(run_id)
+    if job is not None and job.status == "running":
+        raise HTTPException(status_code=409, detail="Run is still in progress — cancel it first")
+
     def _q():
         cur = _db.execute("DELETE FROM runs WHERE id = ?", (run_id,))
         _db.commit()
@@ -341,7 +433,7 @@ async def history_delete(run_id: int):
 @app.delete("/history")
 async def history_clear():
     def _q():
-        cur = _db.execute("DELETE FROM runs")
+        cur = _db.execute("DELETE FROM runs WHERE status != 'running'")
         _db.commit()
         return cur.rowcount
 
@@ -1076,66 +1168,173 @@ def _fetch_summary(page: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-# ── Endpoint plumbing: run + record history; optionally stream events ──
+# ── Endpoint plumbing: every run is a registered job with a history row ──
 
-async def _run_recorded(kind, label, request_payload, runner, summary_fn, log: RunLog):
+async def _execute_job(job: Job, runner, summary_fn):
+    """Run a job's work, finalize its history row, publish its terminal event."""
+    log = job.log
     try:
         result = await runner(log)
+    except asyncio.CancelledError:
+        log.emit("done", f"cancelled after {log.duration_ms / 1000:.1f}s")
+
+        async def _record():
+            summary: dict[str, Any] = {"cancelled_after_ms": log.duration_ms}
+            msg: dict[str, Any] = {"type": "cancelled", "t_ms": log.duration_ms}
+            if log.progress:
+                summary["progress"] = log.progress
+                msg["progress"] = log.progress
+            await _finish_run(job.id, log, "cancelled", summary=summary)
+            job.finish(msg, "cancelled")
+
+        # Shield so the history write survives the in-flight cancellation.
+        await asyncio.shield(_record())
+        raise
     except HTTPException as e:
         log.emit("done", f"failed: {e.detail}")
-        await save_run(log, request_payload, status="error", error=str(e.detail))
+        await _finish_run(job.id, log, "error", error=str(e.detail))
+        job.finish({"type": "error", "error": str(e.detail)}, "error")
         raise
     except Exception as e:
-        logger.exception("[%s %r] unexpected failure", kind, label)
+        logger.exception("[%s %r] unexpected failure", log.kind, log.label)
         log.emit("done", f"failed: {e}")
-        await save_run(log, request_payload, status="error", error=str(e))
+        await _finish_run(job.id, log, "error", error=str(e))
+        job.finish({"type": "error", "error": str(e)}, "error")
         raise
     log.emit("done", f"completed in {log.duration_ms / 1000:.1f}s")
-    await save_run(log, request_payload, status="ok", summary=summary_fn(result))
+    await _finish_run(job.id, log, "ok", summary=summary_fn(result))
+    job.finish({"type": "result", "data": result}, "ok")
     return result
+
+
+async def _run_inline(kind, label, request_payload, runner, summary_fn):
+    """Run a job within the request (non-stream endpoints). The run is still
+    registered, so it shows as running in /history and can be cancelled."""
+    job = await _create_job(kind, label, request_payload)
+    job.task = asyncio.current_task()
+    try:
+        return await _execute_job(job, runner, summary_fn)
+    finally:
+        _reap_later(job)
 
 
 def _sse(obj: dict[str, Any]) -> str:
     return f"data: {json.dumps(obj)}\n\n"
 
 
-def _stream_response(kind, label, request_payload, runner, summary_fn) -> StreamingResponse:
-    log = RunLog(kind, label)
-    log.queue = asyncio.Queue()
+async def _attach_gen(job: Job):
+    """SSE stream for a job: announce it, replay buffered events, tail live.
+    Closing this stream does not touch the job — cancel is explicit only."""
+    q: asyncio.Queue = asyncio.Queue()
+    job.subscribers.add(q)
+    try:
+        yield _sse({
+            "type": "job", "id": job.id, "kind": job.log.kind,
+            "label": job.log.label, "status": job.status, "request": job.request,
+        })
+        sent = 0
+        for ev in list(job.log.events):
+            yield _sse({"type": "event", **ev})
+            sent += 1
+        if job.terminal is not None:
+            yield _sse(job.terminal)
+            return
+        while True:
+            msg = await q.get()
+            i = msg.get("i")
+            if i is not None:  # skip events already sent during replay
+                if i < sent:
+                    continue
+                sent = i + 1
+            yield _sse(msg)
+            if msg["type"] in ("result", "error", "cancelled"):
+                return
+    finally:
+        job.subscribers.discard(q)
 
-    async def work():
-        try:
-            result = await _run_recorded(kind, label, request_payload, runner, summary_fn, log)
-            log.queue.put_nowait({"type": "result", "data": result})
-        except HTTPException as e:
-            log.queue.put_nowait({"type": "error", "error": str(e.detail)})
-        except Exception as e:
-            log.queue.put_nowait({"type": "error", "error": str(e)})
 
-    async def gen():
-        task = asyncio.create_task(work())
-        try:
-            while True:
-                ev = await log.queue.get()
-                yield _sse(ev)
-                if ev["type"] in ("result", "error"):
-                    break
-        finally:
-            if not task.done():
-                task.cancel()
-
+def _event_stream(gen) -> StreamingResponse:
     return StreamingResponse(
-        gen(),
+        gen,
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
+def _stream_response(kind, label, request_payload, runner, summary_fn) -> StreamingResponse:
+    async def gen():
+        job = await _create_job(kind, label, request_payload)
+
+        async def work():
+            try:
+                await _execute_job(job, runner, summary_fn)
+            except BaseException:
+                pass  # terminal state already recorded and published
+            finally:
+                _reap_later(job)
+
+        # Detached: the job keeps running if this client disconnects.
+        job.task = asyncio.create_task(work())
+        async for chunk in _attach_gen(job):
+            yield chunk
+
+    return _event_stream(gen())
+
+
+# ── Jobs: list running, re-attach, cancel ──
+
+@app.get("/jobs")
+async def jobs_list():
+    jobs = [
+        {
+            "id": j.id, "kind": j.log.kind, "label": j.log.label,
+            "status": j.status, "started_at": j.log.started_at.isoformat(),
+            "duration_ms": j.log.duration_ms, "event_count": len(j.log.events),
+        }
+        for j in JOBS.values() if j.status == "running"
+    ]
+    jobs.sort(key=lambda j: j["id"], reverse=True)
+    return {"jobs": jobs}
+
+
+@app.get("/jobs/{run_id}/stream")
+async def job_stream(run_id: int):
+    job = JOBS.get(run_id)
+    if job is None:
+        raise HTTPException(
+            status_code=404, detail=f"No live job {run_id} — see /history/{run_id} for its record"
+        )
+    return _event_stream(_attach_gen(job))
+
+
+@app.post("/jobs/{run_id}/cancel")
+async def job_cancel(run_id: int):
+    job = JOBS.get(run_id)
+    if job is None:
+        raise HTTPException(
+            status_code=404, detail=f"No live job {run_id} — it may have finished already"
+        )
+    if job.status != "running":
+        return {"id": run_id, "status": job.status}
+    job.log.emit("cancel", "cancel requested — stopping run")
+    if job.log.fc_crawl_id:  # stop the upstream Firecrawl crawl too
+        try:
+            await client.delete(
+                f"{FIRECRAWL_URL}/v2/crawl/{job.log.fc_crawl_id}",
+                headers=FIRECRAWL_HEADERS, timeout=CRAWL_POLL_TIMEOUT,
+            )
+            job.log.emit("cancel", "upstream crawl job cancelled")
+        except httpx.HTTPError as e:
+            job.log.emit("cancel", f"upstream cancel failed (stopping anyway): {e}")
+    if job.task is not None and not job.task.done():
+        job.task.cancel()
+    return {"id": run_id, "status": "cancelling"}
+
+
 @app.post("/search")
 async def search_post(req: SearchRequest):
-    log = RunLog("search", req.query)
-    return await _run_recorded(
-        "search", req.query, req.model_dump(), lambda l: _run_search(req, l), _search_summary, log
+    return await _run_inline(
+        "search", req.query, req.model_dump(), lambda l: _run_search(req, l), _search_summary
     )
 
 
@@ -1194,9 +1393,8 @@ async def search_get(
         end_date=end_date,
         include_answer=answer,
     )
-    log = RunLog("search", req.query)
-    return await _run_recorded(
-        "search", req.query, req.model_dump(), lambda l: _run_search(req, l), _search_summary, log
+    return await _run_inline(
+        "search", req.query, req.model_dump(), lambda l: _run_search(req, l), _search_summary
     )
 
 
@@ -1207,9 +1405,11 @@ async def _run_fetch_batch(req: FetchRequest, log: RunLog) -> dict[str, Any]:
     sem = asyncio.Semaphore(concurrency)
     slots: list[dict[str, Any] | None] = [None] * len(req.urls)  # preserves input order
     failed: list[dict[str, Any]] = []
+    settled = 0
     log.emit("fetch", f"batch fetching {len(req.urls)} urls (concurrency {concurrency})")
 
     async def one(i: int, u: str):
+        nonlocal settled
         async with sem:
             sub = req.model_copy(update={"url": u, "urls": None})
             try:
@@ -1220,6 +1420,8 @@ async def _run_fetch_batch(req: FetchRequest, log: RunLog) -> dict[str, Any]:
             except Exception as e:
                 failed.append({"url": u, "error": str(e)})
                 log.emit("fetch", f"failed {u}: {e}")
+            settled += 1
+            log.progress = f"{settled}/{len(req.urls)} urls fetched"
 
     await asyncio.gather(*(one(i, u) for i, u in enumerate(req.urls)))
     results = [p for p in slots if p is not None]
@@ -1245,9 +1447,8 @@ def _fetch_label(req: FetchRequest) -> str:
 @app.post("/fetch")
 async def fetch(req: FetchRequest):
     label = _fetch_label(req)
-    log = RunLog("fetch", label)
-    return await _run_recorded(
-        "fetch", label, req.model_dump(), lambda l: _run_fetch(req, l), _fetch_summary, log
+    return await _run_inline(
+        "fetch", label, req.model_dump(), lambda l: _run_fetch(req, l), _fetch_summary
     )
 
 
@@ -1547,9 +1748,8 @@ def _map_summary(result: dict[str, Any]) -> dict[str, Any]:
 
 @app.post("/map")
 async def map_site(req: MapRequest):
-    log = RunLog("map", req.url)
-    return await _run_recorded(
-        "map", req.url, req.model_dump(), lambda l: _run_map(req, l), _map_summary, log
+    return await _run_inline(
+        "map", req.url, req.model_dump(), lambda l: _run_map(req, l), _map_summary
     )
 
 
@@ -1657,6 +1857,7 @@ async def _run_crawl(req: CrawlRequest, log: RunLog) -> dict[str, Any]:
         raise HTTPException(
             status_code=502, detail=f"Firecrawl crawl failed to start for {req.url}: {body.get('error')}"
         )
+    log.fc_crawl_id = job_id  # lets POST /jobs/{id}/cancel stop the upstream job too
     log.emit("crawl", f"started crawl job {job_id} (limit {req.limit})")
 
     status: dict[str, Any] = {}
@@ -1682,6 +1883,7 @@ async def _run_crawl(req: CrawlRequest, log: RunLog) -> dict[str, Any]:
         progress = (status.get("completed", 0), state)
         if progress != last_progress:
             log.emit("crawl", f"{status.get('completed', 0)}/{status.get('total', '?')} pages ({state})")
+            log.progress = f"{status.get('completed', 0)} pages fetched"
             last_progress = progress
         if state in ("completed", "failed", "cancelled"):
             break
@@ -1759,9 +1961,8 @@ def _crawl_summary(result: dict[str, Any]) -> dict[str, Any]:
 
 @app.post("/crawl")
 async def crawl_site(req: CrawlRequest):
-    log = RunLog("crawl", req.url)
-    return await _run_recorded(
-        "crawl", req.url, req.model_dump(), lambda l: _run_crawl(req, l), _crawl_summary, log
+    return await _run_inline(
+        "crawl", req.url, req.model_dump(), lambda l: _run_crawl(req, l), _crawl_summary
     )
 
 
