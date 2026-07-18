@@ -2427,9 +2427,8 @@ def _navigate_label(req: NavigateRequest) -> str:
 @app.post("/navigate")
 async def navigate_site(req: NavigateRequest):
     label = _navigate_label(req)
-    log = RunLog("navigate", label)
-    return await _run_recorded(
-        "navigate", label, req.model_dump(), lambda l: _run_navigate(req, l), _navigate_summary, log
+    return await _run_inline(
+        "navigate", label, req.model_dump(), lambda l: _run_navigate(req, l), _navigate_summary
     )
 
 
