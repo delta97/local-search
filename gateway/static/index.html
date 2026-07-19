@@ -249,6 +249,24 @@
   @keyframes spin-anim { to { transform: rotate(360deg); } }
   .icon-spin { animation: spin-anim 0.85s linear infinite; }
 
+  /* teaching hints — short vocabulary explainers in the muted chrome voice */
+  .hint { font-size: 11px; letter-spacing: .03em; color: var(--muted); margin-top: -8px; }
+  .hint code { color: var(--green); background: none; padding: 0; }
+
+  /* answer/summary pills muted when no LLM key is configured */
+  .pill:disabled { opacity: .4; cursor: not-allowed; }
+  .pill:disabled:hover { color: var(--muted); border-color: var(--line); background: transparent; }
+
+  /* failure UX: one friendly summary line + collapsed raw payload */
+  .step .smsg { flex: 1; min-width: 0; }
+  .step .errdetail { display: block; margin-top: 6px; }
+  .step .errdetail summary { cursor: pointer; color: var(--amber-dim); font-size: 11px; letter-spacing: .04em; }
+  .step .errdetail pre {
+    margin: 6px 0 0; background: #0c110f; padding: 10px 12px; border-radius: 8px;
+    overflow: auto; max-height: 200px; font-size: 11.5px; color: #cdd9d2;
+    white-space: pre-wrap; word-break: break-word;
+  }
+
   /* ============================================================
      Narrow viewport adaptation (impeccable/adapt — critique P1)
      Structural stack / wrap / scroll-strip. No font-size shrinking.
@@ -341,6 +359,7 @@
         <div class="field" style="flex:1">
           <label for="q">query</label>
           <input type="text" id="q" placeholder="e.g. self-hosted vector database comparison" autofocus />
+          <div class="fieldnote" id="qNote" role="status" hidden>type a query to search</div>
         </div>
         <div class="field" style="align-self:end">
           <button class="go" type="submit">Search</button>
@@ -377,7 +396,7 @@
           <button type="button" class="pill answer-pill" data-val="basic">basic</button>
           <button type="button" class="pill answer-pill" data-val="advanced">advanced</button>
         </div>
-        <span class="opt" style="font-size:11px;color:#52655c">llm answer over top results · needs OPENROUTER_API_KEY</span>
+        <span class="opt" id="answerHint" style="font-size:11px;color:#52655c">llm answer over top results · needs OPENROUTER_API_KEY</span>
       </div>
       <div class="opts">
         <label class="opt"><input type="checkbox" id="fetchContent" /> scrape top results</label>
@@ -428,6 +447,7 @@
         <div class="opt"><label for="location" style="text-transform:none;letter-spacing:0">country</label>
           <input class="mini" type="text" id="location" placeholder="US" maxlength="3" style="width:64px" /></div>
       </div>
+      <div class="hint">stealth routes the page through the anti-detect browser — slower, but slips past bot walls. reach for it when a normal fetch is blocked, gets a captcha, or comes back empty.</div>
       <div class="opts">
         <span class="opt" style="color:var(--muted);font-size:11px;letter-spacing:.09em;text-transform:uppercase">formats</span>
         <label class="opt"><input type="checkbox" class="fmt" value="markdown" checked /> markdown</label>
@@ -474,6 +494,7 @@
         <label class="opt"><input type="checkbox" id="crawlEntireDomain" /> entire domain</label>
         <label class="opt"><input type="checkbox" id="crawlSubdomains" /> subdomains</label>
       </div>
+      <div class="hint">three independent limits, whichever hits first: <b>max pages</b> caps how many pages are scraped, <b>depth</b> caps how many links deep from the root it follows (0 = root only, blank = auto), and <b>budget</b> is the wall-clock second limit before the crawl is stopped.</div>
       <div class="opts">
         <div class="opt" style="flex:1">
           <label for="crawlInclude" style="text-transform:none;letter-spacing:0">include paths (regex, comma-sep)</label>
@@ -484,6 +505,7 @@
           <input type="text" id="crawlExclude" placeholder="/changelog/.*" style="min-width:200px" />
         </div>
       </div>
+      <div class="hint">path filters are regex matched against the url path only (not the domain) — e.g. <code>/docs/.*</code> keeps everything under /docs. exclude wins over include when both match.</div>
       <div class="opts">
         <span class="opt" style="color:var(--muted);font-size:11px;letter-spacing:.09em;text-transform:uppercase">per-page formats</span>
         <label class="opt"><input type="checkbox" class="cfmt" value="markdown" checked /> markdown</label>
@@ -525,6 +547,7 @@
           </div>
         </div>
       </div>
+      <div class="hint">sitemap mode: <b>include</b> merges the site's sitemap with crawled links (widest coverage), <b>skip</b> ignores the sitemap and only follows discovered links, <b>only</b> returns sitemap entries alone (fastest, but misses anything not listed).</div>
     </form>
     <div class="status" id="mapStatus"></div>
     <div class="results" id="mapResults"></div>
@@ -708,12 +731,20 @@ function makeStepLog(el) {
   el.innerHTML = `<div class="steps"></div>`;
   const list = el.querySelector(".steps");
   let current = null;
-  const settle = () => { if (current) { current.classList.add("donestep"); current.querySelector(".sicon").innerHTML = CHECK_SVG; current = null; } };
+  // An error-bearing step settles as a fault (red ✕), never a green check.
+  const settle = () => {
+    if (!current) return;
+    const isErr = current.dataset.level === "error";
+    current.classList.add(isErr ? "errstep" : "donestep");
+    current.querySelector(".sicon").innerHTML = isErr ? X_SVG : CHECK_SVG;
+    current = null;
+  };
   return {
     add(ev) {
       settle();
       const div = document.createElement("div");
       div.className = "step";
+      if (ev.level === "error") div.dataset.level = "error";
       div.innerHTML = `<span class="sicon">${SPIN_SVG}</span><span class="st">+${(ev.t_ms/1000).toFixed(1)}s</span><span class="sstage">${esc(ev.stage)}</span><span>${esc(ev.message)}</span>`;
       list.appendChild(div);
       current = div;
@@ -721,7 +752,7 @@ function makeStepLog(el) {
     done(html) { settle(); const d = document.createElement("div"); d.className = "step final"; d.innerHTML = `<span class="sicon" style="color:var(--green)">${CHECK_SVG}</span><span>${html}</span>`; list.appendChild(d); },
     fail(html) {
       if (current) { current.classList.add("errstep"); current.querySelector(".sicon").innerHTML = X_SVG; current = null; }
-      const d = document.createElement("div"); d.className = "step final errstep"; d.innerHTML = `<span class="sicon">${X_SVG}</span><span>${html}</span>`; list.appendChild(d);
+      const d = document.createElement("div"); d.className = "step final errstep"; d.innerHTML = `<span class="sicon">${X_SVG}</span><span class="smsg">${html}</span>`; list.appendChild(d);
     },
     cancelled(html) {  // calm final state — a cancelled run is not an error
       if (current) { current.classList.add("cancelstep"); current.querySelector(".sicon").innerHTML = STOP_SVG; current = null; }
@@ -730,12 +761,64 @@ function makeStepLog(el) {
   };
 }
 
-// health
+// Map a raw backend error onto one friendly, actionable line by failure class.
+// The raw payload is always kept verbatim in a collapsed <details> beneath it.
+function friendlyError(raw) {
+  const s = String(raw ?? "");
+  const t = s.toLowerCase();
+  if (/captcha|cloudflare|\bbot\b|challenge|forbidden|access denied|\b403\b|\b401\b/.test(t))
+    return "couldn't scrape this site — it's blocking automated access. try stealth mode.";
+  if (/timeout|timed out|deadline|etimedout|read timed/.test(t))
+    return "the site took too long to respond — try again, raise the wait/timeout, or use stealth mode.";
+  if (/name or service not known|nodename|getaddrinfo|enotfound|name resolution|no address associated/.test(t))
+    return "couldn't resolve that address — check the url is spelled right and the site exists.";
+  if (/connection refused|econnrefused|connection reset|network is unreachable|connecterror|failed to establish/.test(t))
+    return "couldn't connect to the site — it may be down or refusing connections.";
+  if (/\b50[0-9]\b|bad gateway|gateway timeout|service unavailable|internal server error/.test(t))
+    return "the site (or an upstream service) returned a server error — try again in a moment.";
+  if (/\b404\b|not found/.test(t))
+    return "that page wasn't found (404) — double-check the url.";
+  if (/openrouter_api_key|llm/.test(t))
+    return "the answer/summary step needs an LLM key that isn't configured (OPENROUTER_API_KEY).";
+  if (/\bpdf\b/.test(t))
+    return "couldn't read that pdf — it may be scanned, encrypted, or over the size cap.";
+  if (/no pages|no sources|no results/.test(t))
+    return "the run finished with nothing to show — the site returned no usable content.";
+  return "the run couldn't finish. see the raw error below.";
+}
+
+// Render a failure as one friendly line with the raw payload in a <details>.
+function failWithDetail(steps, raw) {
+  steps.fail(
+    `${esc(friendlyError(raw))}<details class="errdetail"><summary>raw error</summary><pre>${esc(String(raw ?? ""))}</pre></details>`
+  );
+}
+
+// health — friendly service labels only; internal hostnames are already
+// stripped server-side. Non-service keys (e.g. llm_configured) drive UI state
+// but are not rendered as status rows.
+const HEALTH_LABELS = { gateway: "gateway", searxng: "search engine", firecrawl: "scrape engine", browser: "browser engine" };
+function applyLlmConfigured(ok) {
+  // No LLM key → the answer pills are a dead end. Mute + disable them, leaving
+  // only "off", and say why in the existing hint.
+  document.querySelectorAll(".answer-pill").forEach(p => {
+    if (p.dataset.val === "") return;  // keep "off" usable
+    p.disabled = !ok;
+    if (!ok) { p.classList.remove("active"); p.title = "needs OPENROUTER_API_KEY"; }
+  });
+  if (!ok) {
+    document.querySelector(".answer-pill[data-val='']")?.classList.add("active");
+    const hint = $("#answerHint");
+    if (hint) hint.textContent = "answer needs OPENROUTER_API_KEY — not configured, so this is unavailable";
+  }
+}
 (async () => {
   try {
     const h = await (await fetch("/healthz")).json();
-    $("#health").innerHTML = Object.entries(h).map(([k,v]) =>
-      `<b>${k}</b> <span class="${String(v).startsWith('ok')?'ok':'bad'}">${esc(String(v))}</span>`).join("");
+    applyLlmConfigured(h.llm_configured !== false);
+    $("#health").innerHTML = Object.entries(h)
+      .filter(([k]) => k in HEALTH_LABELS)
+      .map(([k,v]) => `<b>${HEALTH_LABELS[k]}</b> <span class="${String(v).startsWith('ok')?'ok':'bad'}">${esc(String(v))}</span>`).join("");
   } catch { $("#health").innerHTML = '<span class="bad">gateway unreachable</span>'; }
 })();
 
@@ -934,14 +1017,16 @@ async function driveRun(kind, method, url, body) {
   try {
     const terminal = await streamSSE(method, url, body, msg => {
       if (msg.type === "job") { jobId = msg.id; if (msg.request) request = msg.request; armCancel(); updateRunningTabDot(); }
-      else if (msg.type === "event") steps.add(msg);
+      // "done" events mirror the terminal message (result/error/cancelled),
+      // which renders its own final line — skip them so the error isn't shown twice.
+      else if (msg.type === "event" && msg.stage !== "done") steps.add(msg);
     }, ctrl.signal);
     if (terminal.type === "result") R.done(terminal.data, steps, request);
     else if (terminal.type === "cancelled") steps.cancelled(`cancelled after ${(terminal.t_ms/1000).toFixed(1)}s${terminal.progress?` — ${esc(terminal.progress)}`:""}`);
-    else steps.fail(`error: ${esc(String(terminal.error))}`);
+    else failWithDetail(steps, terminal.error);
   } catch (err) {
     if (err.name === "AbortError") steps.cancelled("stream closed — if the run is still going it shows under history");
-    else steps.fail(`error: ${esc(String(err.message||err))}`);
+    else failWithDetail(steps, err.message || err);
   } finally {
     clearTimeout(noteTimer);
     $(R.status).querySelector(".runnote")?.remove();
@@ -958,10 +1043,13 @@ function attachRun(kind, id) {
 }
 
 // search
+$("#q").addEventListener("input", () => { $("#qNote").hidden = true; });
 $("#searchForm").onsubmit = e => {
   e.preventDefault();
   if (runnerBtn("search").dataset.running) return;
-  const q = $("#q").value.trim(); if (!q) return;
+  const q = $("#q").value.trim();
+  if (!q) { $("#qNote").hidden = false; $("#q").focus(); return; }  // no silent no-op
+  $("#qNote").hidden = true;
   const enrich = $("#fetchContent").checked;
   const body = { query: q, max_results: +$("#max").value, fetch_content: enrich,
                  fetch_top: +$("#fetchTop").value, time_range: getTimeRange(),
