@@ -78,6 +78,69 @@ CRAWL_MAX_LIMIT = 100
 
 FIRECRAWL_HEADERS = {"Authorization": "Bearer local"}  # self-hosted: auth disabled, header ignored
 
+
+# ── Friendly service names: internal container hostnames (api:3002,        ──
+# ── camoufox:3000, searxng:8888, …) must never reach a client. Map them    ──
+# ── onto human names in any error/progress string before it leaves the     ──
+# ── gateway. This only rewrites human-readable strings — never response    ──
+# ── shapes (keys/structure are untouched).                                 ──
+
+def _build_service_tokens() -> list[tuple[str, str]]:
+    """(hostname-token → friendly name), longest token first so a host:port
+    match wins over the bare host."""
+    tokens: list[tuple[str, str]] = []
+    for url, name in (
+        (FIRECRAWL_URL, "scrape engine"),
+        (BROWSER_URL, "browser engine"),
+        (SEARXNG_URL, "search engine"),
+    ):
+        p = urlparse(url)
+        if p.netloc:
+            tokens.append((p.netloc, name))  # host:port, e.g. "api:3002"
+        # NB: no bare host token from config — the configured host is often a
+        # generic word ("api", "localhost") that would false-match ordinary
+        # prose. The host:port form above and the distinctive named services
+        # below cover the actual hostname leaks.
+    # Well-known compose service names / aliases, in case a message carries a
+    # bare host we didn't configure directly. These are distinctive enough to
+    # match on their own; "api" is deliberately omitted (too generic).
+    for host, name in (
+        ("firecrawl", "scrape engine"),
+        ("camoufox", "browser engine"),
+        ("botasaurus", "browser engine"),
+        ("searxng", "search engine"),
+    ):
+        tokens.append((host, name))
+    seen: set[str] = set()
+    uniq: list[tuple[str, str]] = []
+    for tok, name in tokens:
+        if tok and tok not in seen:
+            seen.add(tok)
+            uniq.append((tok, name))
+    uniq.sort(key=lambda t: len(t[0]), reverse=True)
+    return uniq
+
+
+_SERVICE_TOKENS = _build_service_tokens()
+
+
+def _friendly(text: str | None) -> str | None:
+    """Rewrite internal upstream hostnames in a human-readable string onto
+    friendly service names ('scrape engine', 'browser engine', 'search
+    engine'), collapsing full URLs (http://api:3002/v2/scrape → scrape
+    engine) as well as bare host[:port] tokens."""
+    if not text:
+        return text
+    s = str(text)
+    for token, name in _SERVICE_TOKENS:
+        esc = re.escape(token)
+        # Full URL first (drops the scheme + path so no internals survive).
+        s = re.sub(r"https?://" + esc + r"(?:/[^\s'\"]*)?", name, s)
+        # Then any bare host[:port] token, guarded so we don't eat substrings.
+        s = re.sub(r"(?<![\w.])" + esc + r"(?![\w.])", name, s)
+    return s
+
+
 app = FastAPI(title="local-search gateway", version="1.3.0")
 
 
@@ -221,13 +284,18 @@ class RunLog:
         self.progress: str | None = None  # short human progress, e.g. "12 pages fetched"
         self.fc_crawl_id: str | None = None  # upstream Firecrawl crawl job, for cancel
 
-    def emit(self, stage: str, message: str):
-        ev = {
+    def emit(self, stage: str, message: str, level: str = "info"):
+        # Client-facing message is sanitized (no internal hostnames); the raw
+        # message still goes to the server log for operator debugging. `level`
+        # lets the console settle an error-bearing step with a fault icon.
+        ev: dict[str, Any] = {
             "i": len(self.events),  # sequence number, lets re-attaching clients dedupe
             "t_ms": int((time.monotonic() - self.t0) * 1000),
             "stage": stage,
-            "message": message,
+            "message": _friendly(message),
         }
+        if level != "info":
+            ev["level"] = level
         self.events.append(ev)
         logger.info("[%s %r] %s: %s", self.kind, self.label, stage, message)
         if self.on_event is not None:
@@ -724,7 +792,11 @@ async def fetch_pdf(req: FetchRequest, log: RunLog, sniff: bool = False) -> dict
     raising) when the body isn't actually a PDF or the download fails.
     """
     formats = list(req.formats) if req.formats else ["markdown"]
-    log.emit("pdf", f"downloading {req.url} (pdf path, {PDF_MAX_BYTES // 2**20}MB cap)")
+    # In sniff mode this is a silent fallback probe after another path already
+    # failed — don't render a "downloading pdf" step, or a fatal fetch error
+    # sprouts a spurious follow-up step against a dead URL.
+    if not sniff:
+        log.emit("pdf", f"downloading {req.url} (pdf path, {PDF_MAX_BYTES // 2**20}MB cap)")
     buf = bytearray()
     try:
         # The shared client doesn't follow redirects; PDFs frequently live
@@ -827,7 +899,7 @@ async def camoufox_screenshot(
                 detail = e.response.json().get("error") or e.response.text[:300]
             except Exception:
                 detail = e.response.text[:300] or str(e)
-            log.emit("screenshot", f"attempt {attempt} failed: {detail}")
+            log.emit("screenshot", f"attempt {attempt} failed: {detail}", level="error")
             last_exc = HTTPException(
                 status_code=502, detail=f"Browser screenshot failed for {url}: {detail}"
             )
@@ -835,7 +907,7 @@ async def camoufox_screenshot(
         except httpx.HTTPError as e:
             # str() of httpx timeouts is often empty; include the class name.
             detail = f"{type(e).__name__}: {e}".rstrip(": ")
-            log.emit("screenshot", f"attempt {attempt} failed: {detail}")
+            log.emit("screenshot", f"attempt {attempt} failed: {detail}", level="error")
             last_exc = HTTPException(
                 status_code=502, detail=f"Browser screenshot error for {url}: {detail}"
             )
@@ -921,7 +993,7 @@ async def firecrawl_scrape(req: FetchRequest, log: RunLog) -> dict[str, Any]:
             raise page
         page["formats"] = formats
         if isinstance(shot, BaseException):
-            page["screenshot_error"] = (
+            page["screenshot_error"] = _friendly(
                 shot.detail if isinstance(shot, HTTPException) else str(shot)
             )
         else:
@@ -992,11 +1064,11 @@ async def _firecrawl_request(
         r = await client.post(f"{FIRECRAWL_URL}/v2/scrape", json=payload, headers=FIRECRAWL_HEADERS)
         r.raise_for_status()
     except httpx.HTTPError as e:
-        log.emit("scrape", f"firecrawl error for {req.url}: {e}")
+        log.emit("scrape", f"firecrawl error for {req.url}: {e}", level="error")
         raise HTTPException(status_code=502, detail=f"Firecrawl error for {req.url}: {e}") from e
     body = r.json()
     if not body.get("success"):
-        log.emit("scrape", f"firecrawl failed for {req.url}: {body.get('error')}")
+        log.emit("scrape", f"firecrawl failed for {req.url}: {body.get('error')}", level="error")
         raise HTTPException(
             status_code=502, detail=f"Firecrawl failed for {req.url}: {body.get('error')}"
         )
@@ -1034,6 +1106,10 @@ async def healthz():
         )
     except Exception as e:
         status["browser"] = f"unreachable ({BROWSER_URL}): {e}"
+    # Never leak internal hostnames in the health readout.
+    status = {k: _friendly(v) for k, v in status.items()}
+    # Lets the console disable the answer/summary pills when no LLM key is set.
+    status["llm_configured"] = bool(OPENROUTER_API_KEY)
     return status
 
 
@@ -1194,11 +1270,11 @@ async def summarize_page(page: dict[str, Any], log: RunLog, goal: str | None = N
         page["summary_model"] = ANSWER_MODEL
         log.emit("summarize", f"summary ready for {url} ({len(page['summary'])} chars)")
     except HTTPException as e:
-        page["summary_error"] = str(e.detail)
-        log.emit("summarize", f"summary failed for {url}: {e.detail}")
+        page["summary_error"] = _friendly(str(e.detail))
+        log.emit("summarize", f"summary failed for {url}: {e.detail}", level="error")
     except Exception as e:
-        page["summary_error"] = str(e)
-        log.emit("summarize", f"summary failed for {url}: {e}")
+        page["summary_error"] = _friendly(str(e))
+        log.emit("summarize", f"summary failed for {url}: {e}", level="error")
 
 
 async def _summarize_pages(pages: list[dict[str, Any]], log: RunLog, goal: str | None = None):
@@ -1251,8 +1327,8 @@ async def _run_search(req: SearchRequest, log: RunLog) -> dict[str, Any]:
                 if page.get("screenshot_error"):
                     item["screenshot_error"] = page["screenshot_error"]
             except HTTPException as e:
-                log.emit("enrich", f"scrape failed for {item['url']}: {e.detail}")
-                item["content_error"] = e.detail
+                log.emit("enrich", f"scrape failed for {item['url']}: {e.detail}", level="error")
+                item["content_error"] = _friendly(e.detail)
 
         await asyncio.gather(*(safe_scrape(item) for item in top))
         log.emit("enrich", "enrichment complete")
@@ -1269,8 +1345,8 @@ async def _run_search(req: SearchRequest, log: RunLog) -> dict[str, Any]:
             try:
                 out.update(await synthesize_answer(req.query, results, mode, log))
             except Exception as e:
-                out["answer_error"] = f"answer synthesis failed: {e}"
-                log.emit("answer", out["answer_error"])
+                out["answer_error"] = _friendly(f"answer synthesis failed: {e}")
+                log.emit("answer", f"answer synthesis failed: {e}", level="error")
     return out
 
 
@@ -1349,15 +1425,17 @@ async def _execute_job(job: Job, runner, summary_fn):
         await asyncio.shield(_record())
         raise
     except HTTPException as e:
-        log.emit("done", f"failed: {e.detail}")
-        await _finish_run(job.id, log, "error", error=str(e.detail))
-        job.finish({"type": "error", "error": str(e.detail)}, "error")
+        err = _friendly(str(e.detail))
+        log.emit("done", f"failed: {e.detail}", level="error")
+        await _finish_run(job.id, log, "error", error=err)
+        job.finish({"type": "error", "error": err}, "error")
         raise
     except Exception as e:
         logger.exception("[%s %r] unexpected failure", log.kind, log.label)
-        log.emit("done", f"failed: {e}")
-        await _finish_run(job.id, log, "error", error=str(e))
-        job.finish({"type": "error", "error": str(e)}, "error")
+        err = _friendly(str(e))
+        log.emit("done", f"failed: {e}", level="error")
+        await _finish_run(job.id, log, "error", error=err)
+        job.finish({"type": "error", "error": err}, "error")
         raise
     log.emit("done", f"completed in {log.duration_ms / 1000:.1f}s")
     await _finish_run(job.id, log, "ok", summary=summary_fn(result))
@@ -1573,11 +1651,11 @@ async def _run_fetch_batch(req: FetchRequest, log: RunLog) -> dict[str, Any]:
             try:
                 slots[i] = _apply_max_chars(await firecrawl_scrape(sub, log), req.max_chars)
             except HTTPException as e:
-                failed.append({"url": u, "error": str(e.detail)})
-                log.emit("fetch", f"failed {u}: {e.detail}")
+                failed.append({"url": u, "error": _friendly(str(e.detail))})
+                log.emit("fetch", f"failed {u}: {e.detail}", level="error")
             except Exception as e:
-                failed.append({"url": u, "error": str(e)})
-                log.emit("fetch", f"failed {u}: {e}")
+                failed.append({"url": u, "error": _friendly(str(e))})
+                log.emit("fetch", f"failed {u}: {e}", level="error")
             settled += 1
             log.progress = f"{settled}/{len(req.urls)} urls fetched"
 
@@ -1837,7 +1915,7 @@ async def _firecrawl_map(url: str, payload: dict[str, Any], log: RunLog) -> list
         r = await client.post(f"{FIRECRAWL_URL}/v2/map", json=payload, headers=FIRECRAWL_HEADERS)
         r.raise_for_status()
     except httpx.HTTPError as e:
-        log.emit("map", f"firecrawl map error: {e}")
+        log.emit("map", f"firecrawl map error: {e}", level="error")
         raise
     body = r.json()
     if not body.get("success"):
@@ -2137,7 +2215,7 @@ async def _run_crawl(req: CrawlRequest, log: RunLog) -> dict[str, Any]:
         "page_count": len(pages),
         "formats": formats,
         "pages": pages,
-        **({"error": error} if error else {}),
+        **({"error": _friendly(error)} if error else {}),
     }
 
 
@@ -2349,18 +2427,18 @@ async def _run_navigate(req: NavigateRequest, log: RunLog) -> dict[str, Any]:
         except HTTPException as e:
             if not trail:
                 raise  # nothing accumulated — surface the scrape error directly
-            log.emit("navigate", f"scrape failed at step {step} — ending walk: {e.detail}")
+            log.emit("navigate", f"scrape failed at step {step} — ending walk: {e.detail}", level="error")
             trail.append({"url": current, "title": None, "step": step,
-                          "relevant": False, "summary": None, "error": str(e.detail)})
+                          "relevant": False, "summary": None, "error": _friendly(str(e.detail))})
             break
 
         candidates = _nav_candidates(page.get("links"), visited, root_host, req, base=current)
         try:
             decision = await _navigate_step_decision(req, step, page, candidates, findings, log)
         except HTTPException as e:
-            log.emit("navigate", f"LLM failed at step {step} — ending walk: {e.detail}")
+            log.emit("navigate", f"LLM failed at step {step} — ending walk: {e.detail}", level="error")
             trail.append({"url": current, "title": page.get("title"), "step": step,
-                          "relevant": False, "summary": None, "error": str(e.detail)})
+                          "relevant": False, "summary": None, "error": _friendly(str(e.detail))})
             if not findings:
                 raise
             break
