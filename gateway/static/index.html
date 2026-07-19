@@ -15,6 +15,9 @@
     --panel-2: #18231e;
     --ink: #e8f0ea;
     --muted: #7f948a;
+    /* dim helper/timestamp ink — WCAG AA (>=4.5:1) on bg/panel/panel-2,
+       kept dimmer than --muted but in the same desaturated sage family */
+    --ink-dim: #798d82;
     --line: #263630;
     --amber: #f5b843;
     --amber-dim: #b9862a;
@@ -81,7 +84,7 @@
   }
   textarea { resize: vertical; line-height: 1.5; }
   input:focus, select:focus, textarea:focus { outline: none; border-color: var(--amber-dim); box-shadow: 0 0 0 3px rgba(245,184,67,.12); }
-  ::placeholder { color: #52655c; }
+  ::placeholder { color: var(--ink-dim); }
 
   .fieldnote { font-size: 11px; letter-spacing: .04em; color: var(--red); animation: rise .25s ease both; }
   .fieldnote[hidden] { display: none; }
@@ -120,7 +123,6 @@
     transition: color .15s, border-color .15s, background .15s;
   }
   button.go.go-cancel:hover { background: rgba(232,112,90,.06); color: var(--red); border-color: var(--red); }
-  button.go.go-cancel:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(245,184,67,.12); }
   button.go.go-cancel:disabled { background: transparent; color: var(--muted); border-color: var(--line); cursor: wait; opacity: .7; }
 
   .status { min-height: 20px; margin-top: 20px; font-size: 13px; color: var(--muted); }
@@ -132,7 +134,7 @@
   .step { display: flex; align-items: baseline; gap: 8px; color: var(--muted); animation: rise .25s ease both; }
   .step .sicon { width: 14px; flex-shrink: 0; align-self: center; color: var(--amber); }
   .step.donestep .sicon { color: var(--green); }
-  .step .st { color: #52655c; font-size: 11px; min-width: 46px; text-align: right; }
+  .step .st { color: var(--ink-dim); font-size: 11px; min-width: 46px; text-align: right; }
   .step .sstage { color: var(--amber-dim); text-transform: uppercase; font-size: 10.5px; letter-spacing: .08em; min-width: 72px; }
   .step.final { color: var(--ink); }
   .step.errstep, .step.errstep .sstage { color: var(--red); }
@@ -142,8 +144,19 @@
   /* history */
   .hbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 14px; }
   .hbar .pills { margin-left: auto; }
-  .hrun { cursor: pointer; }
+  /* history cards animate their entrance only on first render / for genuinely
+     new runs — .hnew is added by loadHistory, never on revisit re-renders.
+     .card.hrun / .hrun.hnew both outrank the base `.card { animation: rise }`. */
+  .card.hrun { animation: none; }
+  .hrun.hnew { animation: rise .35s ease both; }
   .hrun .hrow { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+  /* the disclosure trigger is a real button spanning the info columns; the
+     row actions (rerun/delete or attach/cancel) sit beside it, not inside it */
+  .hexpand {
+    flex: 1; min-width: 0; display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap;
+    background: transparent; border: none; padding: 0; margin: 0; cursor: pointer;
+    font-family: inherit; font-size: inherit; color: inherit; text-align: left;
+  }
   .hrun .hkind { font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; border: 1px solid var(--line); border-radius: 20px; padding: 2px 10px; color: var(--amber); }
   .hrun .hlabel { font-family: "Fraunces", serif; font-size: 15.5px; color: var(--ink); word-break: break-all; flex: 1; min-width: 200px; }
   .hrun .hmeta { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
@@ -187,7 +200,7 @@
   }
   .ohead .oicon { color: var(--amber-dim); display: flex; }
   .ohead .oname { font-size: 11px; letter-spacing: .09em; text-transform: uppercase; color: var(--muted); }
-  .ohead .osize { font-size: 11px; color: #52655c; }
+  .ohead .osize { font-size: 11px; color: var(--ink-dim); }
   .ohead .oactions { margin-left: auto; display: flex; gap: 6px; align-items: center; }
   .obtn {
     background: transparent; border: 1px solid var(--line); color: var(--muted);
@@ -212,6 +225,7 @@
   /* collapsible scraped-output section on search cards */
   .ocollapse-head {
     display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none;
+    width: 100%; font-family: inherit; text-align: left; background: transparent;
     margin-top: 12px; padding: 8px 12px; border: 1px dashed var(--line); border-radius: 8px;
     color: var(--amber-dim); font-size: 12px; letter-spacing: .04em;
     transition: color .15s, border-color .15s, background .15s;
@@ -248,6 +262,49 @@
   .tab .icon { width: 12px; height: 12px; vertical-align: -1px; }
   @keyframes spin-anim { to { transform: rotate(360deg); } }
   .icon-spin { animation: spin-anim 0.85s linear infinite; }
+
+  /* ============================================================
+     Accessibility (impeccable/audit — critique P2)
+     ============================================================ */
+
+  /* visually-hidden live region for screen-reader status announcements */
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+  }
+
+  /* universal "harvest glow" focus ring — one consistent, branded indicator on
+     every interactive element (keyboard focus only, via :focus-visible) */
+  a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible,
+  textarea:focus-visible, summary:focus-visible, [tabindex]:focus-visible,
+  [role="tab"]:focus-visible, .ocollapse-head:focus-visible, .hexpand:focus-visible {
+    outline: 2px solid var(--amber);
+    outline-offset: 2px;
+    box-shadow: 0 0 0 3px rgba(245,184,67,.15), 0 0 14px rgba(245,184,67,.35);
+  }
+  /* inputs keep their amber border on focus; the glow is added on keyboard focus */
+  input:focus-visible, select:focus-visible, textarea:focus-visible {
+    border-color: var(--amber-dim);
+  }
+
+  /* footer keyboard-accelerator hint */
+  .kbdhint { margin-top: 8px; color: var(--muted); }
+  .kbdhint kbd {
+    font-family: inherit; font-size: 10.5px; color: var(--ink);
+    background: var(--panel-2); border: 1px solid var(--line); border-radius: 4px;
+    padding: 1px 6px; margin: 0 1px;
+  }
+
+  /* respect reduced-motion: neutralize scanline/rise/pulse/glow/spin motion */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: .001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: .001ms !important;
+      scroll-behavior: auto !important;
+    }
+    .dot, .tab .livedot { animation: none !important; opacity: 1 !important; }
+  }
 
   /* ============================================================
      Narrow viewport adaptation (impeccable/adapt — critique P1)
@@ -315,6 +372,7 @@
 </head>
 <body>
 <div class="wrap">
+  <div id="srStatus" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
   <header>
     <div class="brand">
       <span class="dot"></span>
@@ -326,16 +384,16 @@
     <div id="health">checking upstreams…</div>
   </header>
 
-  <div class="tabs">
-    <button class="tab active" data-tab="search"><i data-lucide="search" class="icon"></i> Search</button>
-    <button class="tab" data-tab="fetch"><i data-lucide="globe" class="icon"></i> Fetch page</button>
-    <button class="tab" data-tab="crawl"><i data-lucide="waypoints" class="icon"></i> Crawl</button>
-    <button class="tab" data-tab="map"><i data-lucide="map" class="icon"></i> Map</button>
-    <button class="tab" data-tab="history"><i data-lucide="history" class="icon"></i> History</button>
+  <div class="tabs" role="tablist" aria-label="console panels">
+    <button class="tab active" id="tab-search" role="tab" aria-selected="true" aria-controls="panel-search" tabindex="0" data-tab="search"><i data-lucide="search" class="icon"></i> Search</button>
+    <button class="tab" id="tab-fetch" role="tab" aria-selected="false" aria-controls="panel-fetch" tabindex="-1" data-tab="fetch"><i data-lucide="globe" class="icon"></i> Fetch page</button>
+    <button class="tab" id="tab-crawl" role="tab" aria-selected="false" aria-controls="panel-crawl" tabindex="-1" data-tab="crawl"><i data-lucide="waypoints" class="icon"></i> Crawl</button>
+    <button class="tab" id="tab-map" role="tab" aria-selected="false" aria-controls="panel-map" tabindex="-1" data-tab="map"><i data-lucide="map" class="icon"></i> Map</button>
+    <button class="tab" id="tab-history" role="tab" aria-selected="false" aria-controls="panel-history" tabindex="-1" data-tab="history"><i data-lucide="history" class="icon"></i> History</button>
   </div>
 
   <!-- SEARCH -->
-  <section class="panel" id="panel-search">
+  <section class="panel" id="panel-search" role="tabpanel" aria-labelledby="tab-search">
     <form id="searchForm">
       <div class="row">
         <div class="field" style="flex:1">
@@ -377,7 +435,7 @@
           <button type="button" class="pill answer-pill" data-val="basic">basic</button>
           <button type="button" class="pill answer-pill" data-val="advanced">advanced</button>
         </div>
-        <span class="opt" style="font-size:11px;color:#52655c">llm answer over top results · needs OPENROUTER_API_KEY</span>
+        <span class="opt" style="font-size:11px;color:var(--ink-dim)">llm answer over top results · needs OPENROUTER_API_KEY</span>
       </div>
       <div class="opts">
         <label class="opt"><input type="checkbox" id="fetchContent" /> scrape top results</label>
@@ -404,7 +462,7 @@
   </section>
 
   <!-- FETCH -->
-  <section class="panel" id="panel-fetch" hidden>
+  <section class="panel" id="panel-fetch" role="tabpanel" aria-labelledby="tab-fetch" hidden>
     <form id="fetchForm">
       <div class="row">
         <div class="field" style="flex:1">
@@ -453,7 +511,7 @@
   </section>
 
   <!-- CRAWL -->
-  <section class="panel" id="panel-crawl" hidden>
+  <section class="panel" id="panel-crawl" role="tabpanel" aria-labelledby="tab-crawl" hidden>
     <form id="crawlForm">
       <div class="row">
         <div class="field" style="flex:1">
@@ -497,7 +555,7 @@
   </section>
 
   <!-- MAP -->
-  <section class="panel" id="panel-map" hidden>
+  <section class="panel" id="panel-map" role="tabpanel" aria-labelledby="tab-map" hidden>
     <form id="mapForm">
       <div class="row">
         <div class="field" style="flex:1">
@@ -531,7 +589,7 @@
   </section>
 
   <!-- HISTORY -->
-  <section class="panel" id="panel-history" hidden>
+  <section class="panel" id="panel-history" role="tabpanel" aria-labelledby="tab-history" hidden>
     <div class="hbar">
       <span class="optlabel"><i data-lucide="history" class="icon"></i> recent runs</span>
       <div class="pills">
@@ -544,12 +602,22 @@
     <div class="hfoot" id="historyFoot" hidden><span id="clearWrap"></span></div>
   </section>
 
-  <footer>gateway <code>:8088</code> · api <code>/search</code> <code>/fetch</code> <code>/crawl</code> <code>/map</code> <code>/history</code> · mcp tools <code>web_search</code> <code>fetch_page</code> <code>crawl_site</code> <code>map_site</code></footer>
+  <footer>gateway <code>:8088</code> · api <code>/search</code> <code>/fetch</code> <code>/crawl</code> <code>/map</code> <code>/history</code> · mcp tools <code>web_search</code> <code>fetch_page</code> <code>crawl_site</code> <code>map_site</code>
+    <div class="kbdhint"><kbd>/</kbd> focus input · <kbd>⌘</kbd>/<kbd>Ctrl</kbd>+<kbd>Enter</kbd> run · <kbd>←</kbd><kbd>→</kbd> switch tabs</div>
+  </footer>
 </div>
 
 <script>
 const $ = s => document.querySelector(s);
 const esc = s => (s ?? "").replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+// single-line polite screen-reader announcer — carries the current run phase /
+// final outcome only, never the whole progress log (avoids SR spam)
+const announce = msg => { const el = $("#srStatus"); if (el) el.textContent = msg; };
+
+// monotonic id source for aria-controls wiring on dynamically-built disclosures
+let _uid = 0;
+const uid = () => "u" + (++_uid);
 
 const SPIN_SVG = `<svg class="icon icon-spin" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>`;
 const CHECK_SVG = `<svg class="icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>`;
@@ -668,11 +736,32 @@ function renderOutputPanels(el, data, host) {
 // tabs
 const TAB_NAMES = ["search", "fetch", "crawl", "map", "history"];
 function openTab(name) {
-  document.querySelectorAll(".tab").forEach(x => x.classList.toggle("active", x.dataset.tab === name));
+  document.querySelectorAll(".tab").forEach(x => {
+    const sel = x.dataset.tab === name;
+    x.classList.toggle("active", sel);
+    x.setAttribute("aria-selected", sel ? "true" : "false");
+    x.tabIndex = sel ? 0 : -1;          // roving tabindex — WAI-ARIA tablist
+  });
   TAB_NAMES.forEach(n => { $("#panel-" + n).hidden = name !== n; });
   if (name === "history") loadHistory();
 }
 document.querySelectorAll(".tab").forEach(t => t.onclick = () => openTab(t.dataset.tab));
+
+// tablist keyboard support: Left/Right (+ Home/End) move focus and activate
+document.querySelector(".tabs").addEventListener("keydown", e => {
+  const tabs = [...document.querySelectorAll(".tab")];
+  const i = tabs.indexOf(document.activeElement);
+  if (i < 0) return;
+  let j;
+  if (e.key === "ArrowRight") j = (i + 1) % tabs.length;
+  else if (e.key === "ArrowLeft") j = (i - 1 + tabs.length) % tabs.length;
+  else if (e.key === "Home") j = 0;
+  else if (e.key === "End") j = tabs.length - 1;
+  else return;
+  e.preventDefault();
+  openTab(tabs[j].dataset.tab);
+  tabs[j].focus();
+});
 
 // Stream an SSE endpoint (fresh run POST or /jobs re-attach GET). Calls onMsg
 // per non-terminal message; resolves with the terminal message (result /
@@ -811,11 +900,12 @@ function renderSearchCards(d) {
   const answer = answerCardHtml(d);
   $("#searchResults").innerHTML = answer + d.results.map((x,i) => {
     const parts = [];
+    const oid = uid();
     const outs = cardOutputs(x);
     const fmts = Object.keys(outs).filter(k => outs[k] != null && (k !== "links" || outs[k].length));
     if (fmts.length) parts.push(`<div class="ocollapse" data-i="${i}">
-      <div class="ocollapse-head">${ICONS.markdown}<span>scraped output · ${fmts.map(esc).join(", ")}</span><span class="chev">${ICONS.chevron}</span></div>
-      <div class="ocollapse-body"></div></div>`);
+      <button type="button" class="ocollapse-head" aria-expanded="false" aria-controls="${oid}">${ICONS.markdown}<span>scraped output · ${fmts.map(esc).join(", ")}</span><span class="chev">${ICONS.chevron}</span></button>
+      <div class="ocollapse-body" id="${oid}"></div></div>`);
     if (x.content_error) parts.push(`<div class="meta"><span class="err">scrape failed: ${esc(String(x.content_error))}</span></div>`);
     if (x.screenshot_error) parts.push(`<div class="meta"><span class="err">screenshot failed: ${esc(String(x.screenshot_error))}</span></div>`);
     const scraped = fmts.length ? '<span class="badge">scraped</span>' : "";
@@ -831,8 +921,10 @@ function renderSearchCards(d) {
   $("#searchResults").querySelectorAll(".ocollapse").forEach(c => {
     const x = d.results[+c.dataset.i];
     const body = c.querySelector(".ocollapse-body");
-    c.querySelector(".ocollapse-head").onclick = () => {
-      c.classList.toggle("open");
+    const head = c.querySelector(".ocollapse-head");
+    head.onclick = () => {
+      const open = c.classList.toggle("open");
+      head.setAttribute("aria-expanded", open ? "true" : "false");
       if (!body.dataset.rendered) {
         renderOutputPanels(body, cardOutputs(x), hostOf(x.url));
         body.dataset.rendered = "1";
@@ -931,17 +1023,23 @@ async function driveRun(kind, method, url, body) {
     $(R.status).appendChild(note);
   }, 6000);
 
+  let lastStage = null;
+  announce(`${kind} run started`);
   try {
     const terminal = await streamSSE(method, url, body, msg => {
       if (msg.type === "job") { jobId = msg.id; if (msg.request) request = msg.request; armCancel(); updateRunningTabDot(); }
-      else if (msg.type === "event") steps.add(msg);
+      else if (msg.type === "event") {
+        steps.add(msg);
+        // announce only on phase change so the live region updates, not spams
+        if (msg.stage !== lastStage) { lastStage = msg.stage; announce(`${msg.stage}: ${msg.message}`); }
+      }
     }, ctrl.signal);
-    if (terminal.type === "result") R.done(terminal.data, steps, request);
-    else if (terminal.type === "cancelled") steps.cancelled(`cancelled after ${(terminal.t_ms/1000).toFixed(1)}s${terminal.progress?` — ${esc(terminal.progress)}`:""}`);
-    else steps.fail(`error: ${esc(String(terminal.error))}`);
+    if (terminal.type === "result") { R.done(terminal.data, steps, request); announce(`${kind} run complete`); }
+    else if (terminal.type === "cancelled") { steps.cancelled(`cancelled after ${(terminal.t_ms/1000).toFixed(1)}s${terminal.progress?` — ${esc(terminal.progress)}`:""}`); announce(`${kind} run cancelled`); }
+    else { steps.fail(`error: ${esc(String(terminal.error))}`); announce(`${kind} run failed`); }
   } catch (err) {
-    if (err.name === "AbortError") steps.cancelled("stream closed — if the run is still going it shows under history");
-    else steps.fail(`error: ${esc(String(err.message||err))}`);
+    if (err.name === "AbortError") { steps.cancelled("stream closed — if the run is still going it shows under history"); announce(`${kind} stream closed`); }
+    else { steps.fail(`error: ${esc(String(err.message||err))}`); announce(`${kind} run failed`); }
   } finally {
     clearTimeout(noteTimer);
     $(R.status).querySelector(".runnote")?.remove();
@@ -955,6 +1053,74 @@ function attachRun(kind, id) {
   openTab(kind);
   if (runnerBtn(kind).dataset.running) return;  // already watching a run here
   driveRun(kind, "GET", `/jobs/${id}/stream`, null);
+}
+
+// ── rerun from history: read a past run's recorded request (same shape the
+// attach flow receives as `msg.request`) and repopulate the panel's form. It
+// switches tab and fills the form but never auto-submits. ──
+const setPill = (groupSel, val) =>
+  document.querySelectorAll(groupSel).forEach(p =>
+    p.classList.toggle("active", (p.dataset.val || "") === (val || "")));
+const setFmtChecks = (cls, vals) =>
+  document.querySelectorAll("." + cls).forEach(c => c.checked = (vals || []).includes(c.value));
+
+function fillForm(kind, req) {
+  req = req || {};
+  if (kind === "search") {
+    $("#q").value = req.query || "";
+    if (req.max_results != null) $("#max").value = req.max_results;
+    if (req.fetch_top != null) $("#fetchTop").value = req.fetch_top;
+    $("#fetchContent").checked = !!req.fetch_content;
+    $("#scrapeFormats").style.display = req.fetch_content ? "flex" : "none";
+    $("#includeDomains").value = (req.include_domains || []).join(", ");
+    $("#excludeDomains").value = (req.exclude_domains || []).join(", ");
+    setPill(".time-pill", req.time_range || "");
+    setPill(".answer-pill", typeof req.include_answer === "string" ? req.include_answer : "");
+    if (req.fetch_formats) setFmtChecks("sfmt", req.fetch_formats);
+  } else if (kind === "fetch") {
+    if (req.urls && req.urls.length) { $("#urlList").value = req.urls.join("\n"); $("#url").value = ""; }
+    else { $("#url").value = req.url || ""; $("#urlList").value = ""; }
+    setFmtChecks("fmt", req.formats || ["markdown"]);
+    $("#mainOnly").checked = req.only_main_content !== false;
+    $("#stealth").checked = !!req.stealth;
+    $("#waitFor").value = req.wait_for || 0;
+    $("#location").value = req.location || "";
+    $("#includeTags").value = (req.include_tags || []).join(", ");
+    $("#excludeTags").value = (req.exclude_tags || []).join(", ");
+    updateUrlLimitNote();
+  } else if (kind === "crawl") {
+    $("#crawlUrl").value = req.url || "";
+    if (req.limit != null) $("#crawlLimit").value = req.limit;
+    if (req.timeout_s != null) $("#crawlTimeout").value = req.timeout_s;
+    $("#crawlDepth").value = req.max_depth != null ? req.max_depth : "";
+    setFmtChecks("cfmt", req.formats || ["markdown"]);
+    $("#crawlEntireDomain").checked = !!req.crawl_entire_domain;
+    $("#crawlSubdomains").checked = !!req.allow_subdomains;
+    $("#crawlInclude").value = (req.include_paths || []).join(", ");
+    $("#crawlExclude").value = (req.exclude_paths || []).join(", ");
+  } else if (kind === "map") {
+    $("#mapUrl").value = req.url || "";
+    if (req.limit != null) $("#mapLimit").value = req.limit;
+    $("#mapSubdomains").checked = !!req.include_subdomains;
+    setPill(".sitemap-pill", req.sitemap || "include");
+    $("#mapSearch").value = req.search || "";
+  }
+  savePanel(kind);
+}
+
+const RERUN_INPUT = { search: "#q", fetch: "#url", crawl: "#crawlUrl", map: "#mapUrl" };
+async function rerunFromHistory(kind, id) {
+  if (!RERUN_INPUT[kind]) return;
+  try {
+    const d = await (await fetch(`/history/${id}`)).json();
+    fillForm(kind, d.request);
+    openTab(kind);
+    const input = $(RERUN_INPUT[kind]);
+    if (input) input.focus();
+    announce(`${kind} parameters loaded — review and run`);
+  } catch (err) {
+    announce(`could not load parameters for rerun`);
+  }
 }
 
 // search
@@ -985,9 +1151,10 @@ function renderPageCards(container, pages, failed) {
     const badges = [];
     if (p.is_pdf) badges.push(`<span class="badge">pdf · ${p.page_count} pages</span>`);
     if (p.status_code) badges.push(`<span class="badge">HTTP ${p.status_code}</span>`);
+    const oid = uid();
     const collapse = fmts.length ? `<div class="ocollapse" data-i="${i}">
-      <div class="ocollapse-head">${ICONS.page}<span>content · ${fmts.map(esc).join(", ")}</span><span class="chev">${ICONS.chevron}</span></div>
-      <div class="ocollapse-body"></div></div>` : "";
+      <button type="button" class="ocollapse-head" aria-expanded="false" aria-controls="${oid}">${ICONS.page}<span>content · ${fmts.map(esc).join(", ")}</span><span class="chev">${ICONS.chevron}</span></button>
+      <div class="ocollapse-body" id="${oid}"></div></div>` : "";
     const notes = [];
     if (p.pdf_note) notes.push(`<span style="color:var(--amber)">${esc(String(p.pdf_note))}</span>`);
     if (p.screenshot_error) notes.push(`<span class="err">screenshot failed: ${esc(String(p.screenshot_error))}</span>`);
@@ -1005,8 +1172,10 @@ function renderPageCards(container, pages, failed) {
   container.querySelectorAll(".ocollapse").forEach(c => {
     const p = pages[+c.dataset.i];
     const body = c.querySelector(".ocollapse-body");
-    c.querySelector(".ocollapse-head").onclick = () => {
-      c.classList.toggle("open");
+    const head = c.querySelector(".ocollapse-head");
+    head.onclick = () => {
+      const open = c.classList.toggle("open");
+      head.setAttribute("aria-expanded", open ? "true" : "false");
       if (!body.dataset.rendered) {
         renderOutputPanels(body, { markdown: p.markdown, html: p.html, raw_html: p.raw_html,
           links: p.links, json: p.json, screenshot: p.screenshot }, hostOf(p.url));
@@ -1147,6 +1316,9 @@ const STATUS_HTML = r =>
   `<span class="hmeta herr">error</span>`;
 
 let historyDeletable = 0;
+// run ids already rendered this session — used to fire the `rise` entrance
+// animation only for genuinely new runs, not on every History tab revisit
+const seenRunIds = new Set();
 
 async function loadHistory() {
   $("#historyStatus").innerHTML = `<span class="spin">${SPIN_SVG} loading…</span>`;
@@ -1176,20 +1348,27 @@ async function loadHistory() {
              <button type="button" class="pill sm hattach" aria-label="re-attach to this run's live log">attach</button>
              <button type="button" class="pill sm danger hcancel" aria-label="cancel this run">cancel</button>
            </span>`
-        : `<span class="hactions"><button type="button" class="hdel" title="delete run" aria-label="delete run">${X_SVG}</button></span>`;
-      return `<div class="card hrun" data-id="${r.id}" data-kind="${esc(r.kind)}">
+        : `<span class="hactions">
+             <button type="button" class="pill sm hrerun" aria-label="load this run's parameters into the ${esc(r.kind)} form">rerun</button>
+             <button type="button" class="hdel" title="delete run" aria-label="delete run">${X_SVG}</button>
+           </span>`;
+      const isNew = !seenRunIds.has(r.id);
+      return `<div class="card hrun${isNew?" hnew":""}" data-id="${r.id}" data-kind="${esc(r.kind)}">
         <div class="hrow">
-          <span class="hkind">${esc(r.kind)}</span>
-          <span class="hlabel">${esc(r.label||"")}</span>
-          ${STATUS_HTML(r)}
-          ${bits.length?`<span class="hmeta">${esc(bits.join(" · "))}</span>`:""}
-          <span class="hmeta">${r.duration_ms!=null?`${(r.duration_ms/1000).toFixed(1)}s${running?" so far":""} · `:""}${fmtWhen(r.started_at)}</span>
+          <button type="button" class="hexpand" aria-expanded="false" aria-controls="hd-${r.id}">
+            <span class="hkind">${esc(r.kind)}</span>
+            <span class="hlabel">${esc(r.label||"")}</span>
+            ${STATUS_HTML(r)}
+            ${bits.length?`<span class="hmeta">${esc(bits.join(" · "))}</span>`:""}
+            <span class="hmeta">${r.duration_ms!=null?`${(r.duration_ms/1000).toFixed(1)}s${running?" so far":""} · `:""}${fmtWhen(r.started_at)}</span>
+          </button>
           ${actions}
         </div>
         ${r.error?`<div class="hmeta" style="margin-top:6px"><span class="herr">${esc(r.error)}</span></div>`:""}
-        <div class="hdetail"></div>
+        <div class="hdetail" id="hd-${r.id}"></div>
       </div>`;
     }).join("");
+    d.runs.forEach(r => seenRunIds.add(r.id));
   } catch (err) {
     $("#historyStatus").innerHTML = `<span class="err">error: ${esc(String(err.message||err))}</span>`;
   }
@@ -1201,6 +1380,7 @@ $("#historyList").addEventListener("click", async e => {
   if (!card) return;
   const id = card.dataset.id;
   if (e.target.closest(".hattach")) { attachRun(card.dataset.kind, id); return; }
+  if (e.target.closest(".hrerun")) { rerunFromHistory(card.dataset.kind, id); return; }
   if (e.target.closest(".hcancel")) {
     const b = e.target.closest(".hcancel");
     b.disabled = true; b.textContent = "cancelling…";
@@ -1227,8 +1407,12 @@ $("#historyList").addEventListener("click", async e => {
     wrap.dataset.timer = setTimeout(() => revertRowDelete(card), 5000);
     return;
   }
-  if (e.target.closest(".hactions")) return;
-  if (card.classList.toggle("open")) {
+  // disclosure toggling is driven only by the .hexpand button
+  const expand = e.target.closest(".hexpand");
+  if (!expand) return;
+  const open = card.classList.toggle("open");
+  expand.setAttribute("aria-expanded", open ? "true" : "false");
+  if (open) {
     const detail = card.querySelector(".hdetail");
     if (!detail.dataset.loaded) {
       detail.innerHTML = `<span class="spin">${SPIN_SVG} loading…</span>`;
@@ -1272,6 +1456,73 @@ function armClearAll() {
   clearAllTimer = setTimeout(resetClearAll, 6000);  // quietly revert if left alone
 }
 resetClearAll();
+
+// ── per-panel option persistence: option values survive reloads ──
+// primary query/url inputs are intentionally NOT persisted (skip lists)
+const PERSIST = {
+  search: { form: "#searchForm", pills: [".time-pill", ".answer-pill"], skip: ["q"] },
+  fetch:  { form: "#fetchForm",  pills: [],                             skip: ["url", "urlList"] },
+  crawl:  { form: "#crawlForm",  pills: [],                             skip: ["crawlUrl"] },
+  map:    { form: "#mapForm",    pills: [".sitemap-pill"],              skip: ["mapUrl"] },
+};
+const ctrlKey = el => {
+  if (el.id) return "#" + el.id;
+  const g = [...el.classList].find(c => /fmt$/.test(c));  // sfmt / fmt / cfmt format groups
+  return g ? `.${g}[${el.value}]` : null;
+};
+function savePanel(kind) {
+  const cfg = PERSIST[kind]; if (!cfg) return;
+  const form = $(cfg.form); if (!form) return;
+  const data = { fields: {}, pills: {} };
+  form.querySelectorAll("input, select, textarea").forEach(el => {
+    if (el.id && cfg.skip.includes(el.id)) return;
+    const k = ctrlKey(el); if (!k) return;
+    data.fields[k] = el.type === "checkbox" ? el.checked : el.value;
+  });
+  cfg.pills.forEach(g => { const a = document.querySelector(g + ".active"); if (a) data.pills[g] = a.dataset.val || ""; });
+  try { localStorage.setItem("ls.panel." + kind, JSON.stringify(data)); } catch {}
+}
+function restorePanel(kind) {
+  const cfg = PERSIST[kind]; if (!cfg) return;
+  let data; try { data = JSON.parse(localStorage.getItem("ls.panel." + kind) || "null"); } catch {}
+  if (!data) return;
+  const form = $(cfg.form); if (!form) return;
+  form.querySelectorAll("input, select, textarea").forEach(el => {
+    if (el.id && cfg.skip.includes(el.id)) return;
+    const k = ctrlKey(el); if (!k || !(data.fields && k in data.fields)) return;
+    if (el.type === "checkbox") el.checked = data.fields[k]; else el.value = data.fields[k];
+  });
+  Object.entries(data.pills || {}).forEach(([g, val]) => setPill(g, val));
+}
+Object.entries(PERSIST).forEach(([kind, cfg]) => {
+  const form = $(cfg.form); if (!form) return;
+  restorePanel(kind);
+  form.addEventListener("change", () => savePanel(kind));
+  form.addEventListener("input", () => savePanel(kind));
+  cfg.pills.forEach(g => document.querySelectorAll(g).forEach(p => p.addEventListener("click", () => savePanel(kind))));
+});
+// reflect restored state into dependent UI
+$("#scrapeFormats").style.display = $("#fetchContent").checked ? "flex" : "none";
+updateUrlLimitNote();
+
+// ── keyboard accelerators ──
+//  "/"            → focus the active panel's main input (unless already typing)
+//  Cmd/Ctrl+Enter → submit the active panel's form
+document.addEventListener("keydown", e => {
+  const t = e.target;
+  const typing = /^(input|textarea|select)$/i.test(t.tagName || "") || t.isContentEditable;
+  const active = document.querySelector(".tab.active")?.dataset.tab;
+  if (e.key === "/" && !typing && !e.metaKey && !e.ctrlKey && !e.altKey) {
+    const sel = RERUN_INPUT[active];
+    if (sel && $(sel)) { e.preventDefault(); $(sel).focus(); }
+  } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+    const R = RUNNERS[active], form = R && $(R.form);
+    if (form) {
+      e.preventDefault();
+      form.requestSubmit ? form.requestSubmit() : form.dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
+    }
+  }
+});
 
 // surface runs already in flight (e.g. after a refresh mid-run)
 updateRunningTabDot();
