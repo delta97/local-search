@@ -51,6 +51,8 @@ Health check: `curl http://localhost:8088/healthz`
 
 Open **http://localhost:8088** for an interactive console over the whole pipeline — one tab per capability (Search, Fetch page, Crawl, Map, History). The header shows live health for every upstream service, so you can see at a glance that the gateway, SearXNG, Firecrawl, and the browser engine are all up.
 
+The console (`gateway/static/index.html`) is served from disk inside the gateway image and bundled at build time — a plain `docker compose restart gateway` will **not** pick up edits to it (or to `gateway/app.py`). After changing either, rebuild: `docker compose up -d --build gateway`.
+
 ![Console home: search tab with query options, domain filters, answer synthesis pills, and live upstream health in the header](docs/screenshots/console-home.png)
 
 ### Live streamed runs
@@ -82,6 +84,30 @@ The Map tab discovers a site's URLs without scraping content — sitemap parsing
 The **History** tab lists every past run — search, fetch, crawl, and map, including MCP-driven ones — with status, duration, and a summary. Expanding a run reveals its full event timeline and the original request JSON:
 
 ![History tab: recent runs across map/fetch/search with the newest run expanded to show its full event timeline](docs/screenshots/history.png)
+
+### Run control: cancel, re-attach, rerun
+
+Every search/fetch/crawl/map you run from the console is a first-class server-side job, not just a fetch that dies with the tab:
+
+- **Cancel** — the primary button morphs into a "cancel" affordance the moment a run is accepted; clicking it stops the asyncio task server-side (and the upstream Firecrawl job, where applicable) rather than just closing the browser's stream.
+- **Survives a refresh** — closing the tab or reloading does *not* cancel a run. Head to History and any run still in flight shows an **attach** pill (next to a pulsing amber dot) that re-opens its live progress log exactly where it left off, plus its own **cancel** pill.
+- **Rerun from history** — a completed run's **rerun** pill loads its recorded parameters back into the matching tab's form (query, filters, formats, options — whatever was actually sent) and switches you there. It never auto-submits, so you can tweak before firing it again.
+- **Two-step deletes** — clearing history (single run or "clear all") swaps the button for an inline confirm/keep pair instead of a browser `confirm()` dialog, and reverts on its own if you walk away.
+
+### Friendly error reporting
+
+Failures are summarized in plain language instead of dumping a raw exception: a blocked scrape reads as "couldn't scrape this site — it's blocking automated access, try stealth mode," a DNS failure reads as "couldn't resolve that address," and so on for timeouts, unreachable hosts, upstream 5xx/404s, missing LLM keys, and bad PDFs. The original raw error is always available underneath in a collapsed "raw error" disclosure — nothing is hidden, just triaged. Steps that fail settle with a red ✕ instead of a green check, and internal container hostnames (`api:3002`, `camoufox:3000`, `searxng:8888`) are never shown to you — the gateway rewrites them to friendly service names ("scrape engine", "browser engine", "search engine") in every error, progress message, and the header health readout.
+
+### Accessibility
+
+- **Keyboard** — press `/` to jump into the active tab's main input, and `Cmd`/`Ctrl`+`Enter` to submit it from anywhere (both hinted in the footer). Tabs are a real WAI-ARIA tablist: arrow keys (plus Home/End) move between Search/Fetch/Crawl/Map/History without touching the mouse.
+- **Screen readers** — expandable sections (scraped output, history rows) are real buttons with `aria-expanded`, icon-only controls carry `aria-label`, and a single polite live region announces run-phase changes and the final outcome — not the whole progress log, so it doesn't spam.
+- **Contrast & focus** — every interactive element gets one consistent amber focus ring on keyboard navigation, and the dim helper-text color was recomputed to clear WCAG AA contrast (≥4.5:1) against every dark surface it appears on.
+- **Reduced motion** — `prefers-reduced-motion` turns off the scanline, pulse, glow, and card-entrance animations system-wide.
+
+### Mobile support
+
+Below 640px the tab strip becomes a scrollable, touch-friendly row, the query/URL field and submit button stack instead of squeezing side by side, and multi-column option rows drop to one field per line — no functionality is hidden on a phone-sized screen, just re-flowed.
 
 ## Progress events & run history
 
