@@ -1160,7 +1160,11 @@ function fillForm(kind, req) {
     $("#includeDomains").value = (req.include_domains || []).join(", ");
     $("#excludeDomains").value = (req.exclude_domains || []).join(", ");
     setPill(".time-pill", req.time_range || "");
-    setPill(".answer-pill", typeof req.include_answer === "string" ? req.include_answer : "");
+    // an answer mode disabled by a missing LLM key can't be restored active —
+    // fall back to "off" so rerun never fights applyLlmConfigured.
+    const wantAnswer = typeof req.include_answer === "string" ? req.include_answer : "";
+    const answerPill = document.querySelector(`.answer-pill[data-val="${wantAnswer}"]`);
+    setPill(".answer-pill", (answerPill && answerPill.disabled) ? "" : wantAnswer);
     if (req.fetch_formats) setFmtChecks("sfmt", req.fetch_formats);
   } else if (kind === "fetch") {
     if (req.urls && req.urls.length) { $("#urlList").value = req.urls.join("\n"); $("#url").value = ""; }
@@ -1506,8 +1510,12 @@ $("#historyList").addEventListener("click", async e => {
       detail.innerHTML = `<span class="spin">${SPIN_SVG} loading…</span>`;
       try {
         const d = await (await fetch(`/history/${id}`)).json();
-        const timeline = (d.events||[]).map(ev =>
-          `<div class="step donestep"><span class="st">+${(ev.t_ms/1000).toFixed(1)}s</span><span class="sstage">${esc(ev.stage)}</span><span>${esc(ev.message)}</span></div>`).join("");
+        // replay the run's settled steps — error-level events wear the fault
+        // icon/red, matching how the live log settled them (not a green check).
+        const timeline = (d.events||[]).map(ev => {
+          const isErr = ev.level === "error";
+          return `<div class="step ${isErr?"errstep":"donestep"}"><span class="sicon">${isErr?X_SVG:CHECK_SVG}</span><span class="st">+${(ev.t_ms/1000).toFixed(1)}s</span><span class="sstage">${esc(ev.stage)}</span><span>${esc(ev.message)}</span></div>`;
+        }).join("");
         detail.innerHTML = `<div class="steps">${timeline||"<em>no events recorded</em>"}</div>
           <details style="margin-top:10px"><summary style="cursor:pointer;color:var(--amber-dim);font-size:12px">request + summary json</summary>
           <pre><code>${esc(JSON.stringify({request: d.request, summary: d.summary}, null, 2))}</code></pre></details>`;
